@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- 修复 Android 启动图标 XML，使 GitHub Actions 能打出 APK
+
 ## 0.1.0
 
 - PC 库管：搜索、热门、全集下载、已有跳过；改名为 OMNIX-Podstash
