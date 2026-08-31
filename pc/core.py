@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import unicodedata
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -128,35 +129,402 @@ def is_complete_file(path: Path, expected_size: int = 0) -> bool:
     return st >= MIN_COMPLETE_BYTES
 
 
-def find_existing_file(folder: Path, ep: Episode) -> Optional[Path]:
-    """Locate a previously saved file by index (guid/url) or same title + any audio ext."""
+_AUDIO_EXT_RE = re.compile(r"\.(mp3|m4a|mp4|aac|ogg|opus|wav|flac)$", re.IGNORECASE)
+_KEEP_CHARS_RE = re.compile(r"[^0-9a-zA-Z\u4e00-\u9fff]+")
+# Dates / EP12 / 第n期 may sit against CJK with no space. Bare "95后" must NOT lose "95".
+_PREFIX_RE = re.compile(
+    r"""^(?:
+            (?:
+                \d{4}[-._/年]\d{1,2}[-._/月]\d{1,2}日? |
+                \d{8} |
+                (?:e|ep|vol|s)\.?\s*\d{1,4}(?:e\d{1,4})? |
+                \#\s*\d{1,4} |
+                第\s*\d+\s*(?:期|集|话|回|章)
+            )(?:[\s.\-_—–:：#)\]】]+|(?=[\u4e00-\u9fff])|$)
+            |
+            \d{1,4}[\s.\-_—–:：#)\]】]+
+        )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def strip_audio_ext(name: str) -> str:
+    return _AUDIO_EXT_RE.sub("", name or "")
+
+
+def normalize_match_key(name: str, *, strip_prefixes: bool = True) -> str:
+    """Collapse a title or filename into a comparable token (no punctuation / prefixes)."""
+    s = unicodedata.normalize("NFKC", name or "")
+    s = strip_audio_ext(s).strip()
+    if strip_prefixes:
+        for _ in range(8):
+            nxt = _PREFIX_RE.sub("", s, count=1).strip(" -_.")
+            if nxt == s:
+                break
+            s = nxt
+    s = s.casefold()
+    return _KEEP_CHARS_RE.sub("", s)
+
+
+def _strong_enough(key: str, *, for_substring: bool) -> bool:
+    if not key:
+        return False
+    cjk = sum(1 for c in key if "\u4e00" <= c <= "\u9fff")
+    if for_substring:
+        return cjk >= 4 or len(key) >= 10
+    return cjk >= 2 or len(key) >= 5
+
+
+def score_title_against_filename(ep_title: str, file_name: str, show_name: str = "") -> int:
+    """0–100. 100 exact sanitized name; 90 normalized equal; 80 file ends with title."""
+    stem = strip_audio_ext(Path(file_name).name)
+    if not stem:
+        return 0
+    if sanitize_filename(ep_title, max_len=160) == sanitize_filename(stem, max_len=160):
+        return 100
+    ep_n = normalize_match_key(ep_title)
+    ep_raw = normalize_match_key(ep_title, strip_prefixes=False)
+    file_n = normalize_match_key(stem)
+    show_n = normalize_match_key(show_name) if show_name else ""
+    variants = {file_n}
+    if show_n and len(file_n) > len(show_n) + 1:
+        if file_n.startswith(show_n):
+            variants.add(file_n[len(show_n) :])
+        if file_n.endswith(show_n):
+            variants.add(file_n[: -len(show_n)])
+    best = 0
+    for fn in variants:
+        if not fn:
+            continue
+        if ep_n and ep_n == fn and _strong_enough(ep_n, for_substring=False):
+            best = max(best, 90)
+            continue
+        if ep_raw and ep_raw == fn and _strong_enough(ep_raw, for_substring=False):
+            best = max(best, 88)
+            continue
+        if ep_n and _strong_enough(ep_n, for_substring=True) and fn.endswith(ep_n):
+            best = max(best, 80)
+            continue
+        if ep_n and _strong_enough(ep_n, for_substring=True) and ep_n in fn:
+            best = max(best, 75)
+            continue
+        if _strong_enough(fn, for_substring=True) and fn in (ep_n or ""):
+            best = max(best, 70)
+            continue
+    return best
+
+
+def iter_audio_files(folder: Path, extra_depth: int = 0) -> list[Path]:
+    """Audio files directly in folder; extra_depth=1 also checks one subdirectory."""
+    if not folder.exists() or not folder.is_dir():
+        return []
+    found: list[Path] = []
+    seen: set[str] = set()
+
+    def add_file(p: Path) -> None:
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
+        if key in seen:
+            return
+        if not p.is_file() or p.name.startswith("."):
+            return
+        if p.suffix.lower() not in AUDIO_EXTS:
+            return
+        try:
+            if p.stat().st_size <= 0:
+                return
+        except OSError:
+            return
+        seen.add(key)
+        found.append(p)
+
+    def walk(dir_path: Path, depth: int) -> None:
+        try:
+            children = list(dir_path.iterdir())
+        except OSError:
+            return
+        for p in children:
+            if p.is_file():
+                add_file(p)
+            elif depth > 0 and p.is_dir() and not p.name.startswith("."):
+                walk(p, depth - 1)
+
+    walk(folder, extra_depth)
+    return found
+
+
+def iter_show_folders(out_dir: Path, show_name: str) -> list[Path]:
+    """Show-named folders under the library, plus the library root last (flat files)."""
+    if not out_dir.exists():
+        return []
+    want = normalize_match_key(show_name)
+    exact = sanitize_filename(show_name)
+    ordered: list[Path] = []
+    seen: set[str] = set()
+
+    def add(p: Path) -> None:
+        if not p.exists() or not p.is_dir():
+            return
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
+        if key in seen:
+            return
+        seen.add(key)
+        ordered.append(p)
+
+    def is_show_dir(p: Path) -> bool:
+        n = normalize_match_key(p.name)
+        if not n or not want:
+            return False
+        if n == want:
+            return True
+        return len(want) >= 4 and (want in n or n in want)
+
+    add(out_dir / exact)
+    try:
+        children = [p for p in out_dir.iterdir() if p.is_dir() and not p.name.startswith(".")]
+    except OSError:
+        children = []
+    for p in children[:400]:
+        if is_show_dir(p):
+            add(p)
+        try:
+            nested = [q for q in p.iterdir() if q.is_dir() and not q.name.startswith(".")]
+        except OSError:
+            nested = []
+        for q in nested[:80]:
+            if is_show_dir(q):
+                add(q)
+    add(out_dir)
+    return ordered
+
+
+def _path_from_index_record(folder: Path, rec: dict[str, Any]) -> Optional[Path]:
+    name = str(rec.get("file") or "").strip()
+    if not name:
+        return None
+    raw = Path(name)
+    path = raw if raw.is_absolute() else folder / raw.name
+    try:
+        if path.exists() and path.stat().st_size > 0:
+            return path
+    except OSError:
+        return None
+    return None
+
+
+def _find_by_index_or_exact(folder: Path, ep: Episode) -> Optional[Path]:
     if not folder.exists():
         return None
     index = read_index(folder)
     records = index.get("episodes") or {}
     for key in _index_keys(ep):
         rec = records.get(key)
-        if not isinstance(rec, dict):
-            continue
-        name = str(rec.get("file") or "").strip()
-        if not name:
-            continue
-        path = folder / Path(name).name
-        if path.exists() and path.stat().st_size > 0:
-            return path
-
+        if isinstance(rec, dict):
+            path = _path_from_index_record(folder, rec)
+            if path:
+                return path
     base = sanitize_filename(ep.title, max_len=160)
     if not base:
         return None
     found: list[Path] = []
     for ext in AUDIO_EXTS:
         path = folder / f"{base}{ext}"
-        if path.exists() and path.stat().st_size > 0:
-            found.append(path)
+        if path.exists():
+            try:
+                if path.stat().st_size > 0:
+                    found.append(path)
+            except OSError:
+                pass
     if not found:
         return None
     found.sort(key=lambda p: p.stat().st_size, reverse=True)
     return found[0]
+
+
+def _best_fuzzy_file(
+    ep: Episode,
+    files: list[Path],
+    show_name: str,
+    *,
+    min_score: int,
+) -> Optional[Path]:
+    ranked: list[tuple[int, Path]] = []
+    for path in files:
+        score = score_title_against_filename(ep.title, path.name, show_name)
+        if score >= min_score:
+            ranked.append((score, path))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda t: (-t[0], -t[1].stat().st_size if t[1].exists() else 0))
+    if len(ranked) >= 2 and ranked[0][0] == ranked[1][0] and ranked[0][0] < 90:
+        return None
+    return ranked[0][1]
+
+
+def find_existing_file(folder: Path, ep: Episode) -> Optional[Path]:
+    """Locate a previously saved file by index, exact title+ext, or fuzzy title."""
+    hit = _find_by_index_or_exact(folder, ep)
+    if hit:
+        return hit
+    files = iter_audio_files(folder, extra_depth=1)
+    return _best_fuzzy_file(ep, files, folder.name, min_score=80)
+
+
+def find_existing_in_library(out_dir: Path, show_name: str, ep: Episode) -> Optional[Path]:
+    """Search the show folder(s) and library root for a matching audio file."""
+    mapped = match_episodes_in_library(out_dir, show_name, [ep], remember=False)
+    return mapped.get(ep.index)
+
+
+def match_episodes_in_library(
+    out_dir: Path,
+    show_name: str,
+    episodes: list[Episode],
+    *,
+    remember: bool = True,
+) -> dict[int, Path]:
+    """
+    Pair episodes with on-disk audio (including files downloaded before Podstash).
+    Unique assignment: one file → one episode. Writes the skip index when remember=True.
+    """
+    result: dict[int, Path] = {}
+    if not episodes:
+        return result
+    folders = iter_show_folders(out_dir, show_name)
+    try:
+        root_key = str(out_dir.resolve()) if out_dir.exists() else str(out_dir)
+    except OSError:
+        root_key = str(out_dir)
+
+    show_files: list[Path] = []
+    root_files: list[Path] = []
+    for folder in folders:
+        try:
+            key = str(folder.resolve())
+        except OSError:
+            key = str(folder)
+        if key == root_key:
+            root_files.extend(iter_audio_files(folder, extra_depth=0))
+        else:
+            show_files.extend(iter_audio_files(folder, extra_depth=1))
+        for ep in episodes:
+            if ep.index in result:
+                continue
+            hit = _find_by_index_or_exact(folder, ep)
+            if hit:
+                result[ep.index] = hit
+
+    def _dedupe(paths: list[Path]) -> list[Path]:
+        seen: set[str] = set()
+        out: list[Path] = []
+        for p in paths:
+            try:
+                k = str(p.resolve())
+            except OSError:
+                k = str(p)
+            if k not in seen:
+                seen.add(k)
+                out.append(p)
+        return out
+
+    show_files = _dedupe(show_files)
+    root_files = _dedupe(root_files)
+    used: set[str] = set()
+    for path in result.values():
+        try:
+            used.add(str(path.resolve()))
+        except OSError:
+            used.add(str(path))
+
+    def _key(p: Path) -> str:
+        try:
+            return str(p.resolve())
+        except OSError:
+            return str(p)
+
+    def assign(files: list[Path], remaining: list[Episode], min_score: int, require_show: bool) -> None:
+        pairs: list[tuple[int, int, int, Path]] = []
+        for ep in remaining:
+            for path in files:
+                k = _key(path)
+                if k in used:
+                    continue
+                score = score_title_against_filename(ep.title, path.name, show_name)
+                if score < min_score:
+                    continue
+                if require_show:
+                    fn = normalize_match_key(path.name)
+                    sn = normalize_match_key(show_name)
+                    if score < 90 and sn and sn not in fn:
+                        continue
+                pairs.append((score, len(normalize_match_key(ep.title)), ep.index, path))
+        pairs.sort(key=lambda t: (-t[0], -t[1]))
+        claimed: set[int] = set()
+        for score, _nlen, idx, path in pairs:
+            if idx in claimed or idx in result:
+                continue
+            k = _key(path)
+            if k in used:
+                continue
+            claimed.add(idx)
+            used.add(k)
+            result[idx] = path
+
+    leftover = [ep for ep in episodes if ep.index not in result]
+    assign(show_files, leftover, min_score=70, require_show=False)
+    leftover = [ep for ep in episodes if ep.index not in result]
+    assign(root_files, leftover, min_score=80, require_show=True)
+
+    if remember:
+        for ep in episodes:
+            path = result.get(ep.index)
+            if path is not None:
+                remember_local_file(path.parent, ep, path)
+    return result
+
+
+def mark_episodes_local(
+    out_dir: Path,
+    show_name: str,
+    episodes: list[Episode],
+) -> tuple[list[dict[str, Any]], int]:
+    """Return per-episode local status dicts and the count of complete files found."""
+    mapping = match_episodes_in_library(out_dir, show_name, episodes, remember=True)
+    rows: list[dict[str, Any]] = []
+    done = 0
+    for ep in episodes:
+        path = mapping.get(ep.index)
+        if not path:
+            rows.append(
+                {
+                    "downloaded": False,
+                    "partial": False,
+                    "local_path": "",
+                    "local_size": 0,
+                }
+            )
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        complete = is_complete_file(path, expected_size_for(path.parent, ep, path))
+        if complete:
+            done += 1
+        rows.append(
+            {
+                "downloaded": complete,
+                "partial": (not complete) and size > 0,
+                "local_path": str(path),
+                "local_size": size,
+            }
+        )
+    return rows, done
 
 
 def expected_size_for(folder: Path, ep: Episode, dest: Optional[Path] = None) -> int:
@@ -200,22 +568,12 @@ def remember_local_file(folder: Path, ep: Episode, dest: Path) -> None:
 
 
 def episode_local_status(out_dir: Path, show_name: str, ep: Episode) -> dict[str, Any]:
-    folder = Path(out_dir) / sanitize_filename(show_name)
-    path = find_existing_file(folder, ep)
-    if not path:
-        return {
-            "downloaded": False,
-            "partial": False,
-            "local_path": "",
-            "local_size": 0,
-        }
-    size = path.stat().st_size
-    complete = is_complete_file(path, expected_size_for(folder, ep, path))
-    return {
-        "downloaded": complete,
-        "partial": (not complete) and size > 0,
-        "local_path": str(path),
-        "local_size": size,
+    rows, _ = mark_episodes_local(out_dir, show_name, [ep])
+    return rows[0] if rows else {
+        "downloaded": False,
+        "partial": False,
+        "local_path": "",
+        "local_size": 0,
     }
 
 
@@ -997,7 +1355,7 @@ def build_dest_path(out_dir: Path, show_name: str, ep: Episode) -> Path:
     """
     folder = out_dir / sanitize_filename(show_name)
     folder.mkdir(parents=True, exist_ok=True)
-    existing = find_existing_file(folder, ep)
+    existing = find_existing_in_library(out_dir, show_name, ep)
     if existing:
         return existing
     base = sanitize_filename(ep.title, max_len=160)

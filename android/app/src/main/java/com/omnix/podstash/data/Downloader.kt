@@ -44,6 +44,10 @@ class Downloader(private val context: Context, private val store: Store) {
     ): Episode =
         withContext(Dispatchers.IO) {
             abortCurrent = false
+            if (!force) {
+                val already = store.localStatus(show, episode)
+                if (already.downloaded) return@withContext already
+            }
             val dest = store.destFile(show, episode)
             if (!force && dest.exists() && dest.length() >= Store.MIN_COMPLETE) {
                 val ep = episode.copy(localPath = dest.absolutePath, downloaded = true)

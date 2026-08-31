@@ -64,9 +64,12 @@
             title="同时下载数（不是总集数上限）"
           />
           <button id="btnSaveSettings" class="btn">保存设置</button>
+          <button id="btnScanLibrary" class="btn" title="扫描目录里用其他工具下过的音频，并在本页标记为已下载">
+            检测已有文件
+          </button>
         </div>
         <div class="muted" style="margin-top: 8px">
-          默认目录 D:\Podcasts · 已有完整文件会自动跳过，不会重复下载
+          默认目录 D:\Podcasts · 打开节目或点「检测已有文件」会扫描该目录（含子文件夹）。文件名包含单集标题即可识别，例如「001 标题.mp3」「日期 标题.m4a」，标记后不会重复下载。
         </div>
       </section>
 
@@ -111,6 +114,7 @@
         <div class="toolbar">
           <button id="btnAll" class="btn">全选</button>
           <button id="btnUndownloaded" class="btn">只选未下载</button>
+          <button id="btnScanShow" class="btn">检测已有文件</button>
           <button id="btnNone" class="btn">清空</button>
           <button id="btnLatest10" class="btn">最新 10 集</button>
           <button id="btnLatest30" class="btn">最新 30 集</button>

@@ -399,6 +399,7 @@ private fun ShowPane(vm: AppViewModel) {
                 ) {
                     Text(if (state.selectMode) "下载已选 ${state.selected.size}" else "多选下载")
                 }
+                TextButton(onClick = { vm.scanCurrent() }) { Text("检测已有", color = Accent) }
             }
             if (state.selectMode) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -445,7 +446,9 @@ private fun SettingsPane(
         Text("下载目录", color = TextC, fontWeight = FontWeight.SemiBold)
         Text(vm.libraryPath, color = Muted, fontSize = 12.sp)
         if (vm.pickedFolder) {
-            Text("另外会复制到你选择的系统文件夹", color = Ok, fontSize = 12.sp)
+            Text("已选择系统文件夹：下载完成后会再复制一份；里面已有的音频也会被识别为已下载。", color = Ok, fontSize = 12.sp)
+        } else {
+            Text("选择你以前存播客的文件夹后，打开节目即可把已有文件标成已下载。", color = Muted, fontSize = 12.sp)
         }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -456,6 +459,11 @@ private fun SettingsPane(
             }
             TextButton(onClick = onOpenFolder) { Text("打开目录", color = Accent) }
         }
+        Spacer(Modifier.height(8.dp))
+        Button(onClick = { vm.scanCurrent() }, colors = ButtonDefaults.buttonColors(containerColor = Soft)) {
+            Text("检测已有文件")
+        }
+        Text("按单集标题匹配文件名（支持「001 标题」「日期 标题」「节目名 - 标题」）。识别到的会标成已下载，不会再下一次。", color = Muted, fontSize = 12.sp)
         Spacer(Modifier.height(20.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {

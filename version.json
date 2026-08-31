@@ -1,7 +1,7 @@
 {
-  "version": "0.2.0",
-  "versionCode": 3,
+  "version": "0.2.1",
+  "versionCode": 4,
   "minSdk": 26,
-  "notes": "暂停/继续下载；显示并选择保存文件夹；多选下载；播放器进度/倍速/睡眠/继续听；OPML 导入导出。",
+  "notes": "检测下载目录里用其他工具下过的音频，并在节目列表标记为已下载。",
   "repo": "plnoble/OMNIX-Podstash"
 }

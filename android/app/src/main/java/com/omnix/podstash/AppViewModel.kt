@@ -136,7 +136,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openShow(source: String, preview: Show? = null) {
         viewModelScope.launch {
-            _ui.value = _ui.value.copy(loading = "加载全集…", selectMode = false, selected = emptySet())
+            _ui.value = _ui.value.copy(loading = "加载全集并检测本地文件…", selectMode = false, selected = emptySet())
             try {
                 val (show, eps) = withContext(Dispatchers.IO) { Catalog.resolve(source, _ui.value.country) }
                 val merged = show.copy(
@@ -145,9 +145,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     subscribed = store.shows.any { it.key() == show.key() && it.subscribed },
                     lastSeenGuid = store.shows.find { it.key() == show.key() }?.lastSeenGuid.orEmpty(),
                 )
-                val marked = eps.map { store.localStatus(merged, it) }
+                val marked = withContext(Dispatchers.IO) { store.scanAndMark(merged, eps) }
                 store.upsertShow(merged)
-                _ui.value = _ui.value.copy(current = merged, episodes = marked, loading = "", tab = 3)
+                val localN = marked.count { it.downloaded }
+                _ui.value = _ui.value.copy(
+                    current = merged,
+                    episodes = marked,
+                    loading = "",
+                    tab = 3,
+                    toast = if (localN > 0) "已加载 ${marked.size} 集 · 本地已有 $localN 集" else "",
+                )
             } catch (e: Exception) {
                 _ui.value = _ui.value.copy(loading = "", toast = e.message ?: "解析失败")
             }
@@ -316,12 +323,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun play(ep: Episode, show: Show? = _ui.value.current) {
         val s = show ?: return
-        val path = store.localStatus(s, ep).localPath.ifBlank { ep.localPath }
-        val uri = if (path.isNotBlank() && java.io.File(path).exists()) {
-            Uri.fromFile(java.io.File(path))
-        } else {
-            Uri.parse(ep.audioUrl)
-        }
+        val markedLocal = store.localStatus(s, ep)
+        val path = markedLocal.localPath.ifBlank { ep.localPath }
+        val uri = playbackUri(path, ep.audioUrl)
         val app = getApplication<PodstashApp>()
         app.startForegroundService(Intent(app, PlaybackService::class.java))
         playListener?.let { player.removeListener(it) }
@@ -354,7 +358,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         playListener = listener
         player.addListener(listener)
-        val marked = store.localStatus(s, ep)
+        val marked = if (markedLocal.downloaded) markedLocal else store.localStatus(s, ep)
         store.setLastPlayed(LastPlayed(ep.guid, s, marked, pos))
         _ui.value = _ui.value.copy(
             playing = marked,
@@ -426,7 +430,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setTreeUri(uri: String) {
         store.setTreeUri(uri)
-        _ui.value = _ui.value.copy(toast = "已选择导出文件夹，完成后会再复制一份到该目录")
+        val show = _ui.value.current
+        val eps = _ui.value.episodes
+        if (show != null && eps.isNotEmpty()) {
+            viewModelScope.launch { scanCurrent("正在识别文件夹里的已有文件…") }
+        } else {
+            _ui.value = _ui.value.copy(toast = "已选择文件夹。打开节目后会自动识别里面已经下过的音频")
+        }
+    }
+
+    fun scanCurrent(loadingMsg: String = "正在检测已有文件…") {
+        val show = _ui.value.current
+        val eps = _ui.value.episodes
+        if (show == null || eps.isEmpty()) {
+            _ui.value = _ui.value.copy(toast = "请先打开一档节目，再检测该节目在文件夹里的已有文件")
+            return
+        }
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(loading = loadingMsg)
+            try {
+                val marked = withContext(Dispatchers.IO) { store.scanAndMark(show, eps) }
+                val n = marked.count { it.downloaded }
+                _ui.value = _ui.value.copy(
+                    episodes = marked,
+                    loading = "",
+                    toast = if (n > 0) "已标记 $n 集为已下载，不会重复下载" else "没有识别到已有文件（文件名需包含单集标题）",
+                )
+            } catch (e: Exception) {
+                _ui.value = _ui.value.copy(loading = "", toast = e.message ?: "检测失败")
+            }
+        }
     }
 
     fun importOpml(uri: Uri) {
@@ -476,7 +509,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             for (show in subs) {
                 try {
                     val (fresh, eps) = withContext(Dispatchers.IO) { Catalog.fetchRss(show) }
-                    val marked = eps.map { store.localStatus(fresh, it) }
+                    val marked = withContext(Dispatchers.IO) { store.scanAndMark(fresh, eps) }
                     val newest = marked.firstOrNull()?.guid.orEmpty()
                     val cursor = show.lastSeenGuid
                     val news = if (cursor.isBlank()) emptyList() else {
@@ -545,6 +578,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 delay(500)
             }
         }
+    }
+
+    private fun playbackUri(path: String, audioUrl: String): Uri {
+        if (path.startsWith("content://") || path.startsWith("file://")) return Uri.parse(path)
+        if (path.isNotBlank()) {
+            val f = java.io.File(path)
+            if (f.exists()) return Uri.fromFile(f)
+        }
+        return Uri.parse(audioUrl)
     }
 
     private fun persistPlayhead() {

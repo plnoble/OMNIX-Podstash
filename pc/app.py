@@ -25,7 +25,7 @@ from core import (
     DownloadJob,
     Episode,
     default_out_dir,
-    episode_local_status,
+    mark_episodes_local,
     resolve_source,
     run_download_job,
 )
@@ -175,13 +175,11 @@ async def api_resolve(body: ResolveBody) -> dict[str, Any]:
         raise HTTPException(502, "解析失败: unknown")
 
     out_path = Path(_settings["out_dir"]).expanduser()
+    local_rows, local_done = mark_episodes_local(out_path, show.name, episodes)
     ep_payload = []
-    local_done = 0
-    for e in episodes:
+    for e, local in zip(episodes, local_rows):
         row = e.to_dict()
-        row.update(episode_local_status(out_path, show.name, e))
-        if row.get("downloaded"):
-            local_done += 1
+        row.update(local)
         ep_payload.append(row)
 
     return {
@@ -195,24 +193,26 @@ async def api_resolve(body: ResolveBody) -> dict[str, Any]:
 
 @app.post("/api/local-status")
 async def api_local_status(body: LocalStatusBody) -> dict[str, Any]:
-    """Mark which episodes already exist in the output folder."""
+    """Scan the library folder and mark episodes whose audio is already on disk."""
     out_dir = Path(body.out_dir or _settings["out_dir"]).expanduser()
-    rows = []
-    local_done = 0
+    episodes = []
     for raw in body.episodes:
-        ep = Episode(
-            index=int(raw.get("index") or 0),
-            title=str(raw.get("title") or "Untitled"),
-            audio_url=str(raw.get("audio_url") or raw.get("url") or ""),
-            published=str(raw.get("published") or raw.get("date") or ""),
-            duration=str(raw.get("duration") or ""),
-            guid=str(raw.get("guid") or ""),
-            size=int(raw.get("size") or 0),
+        episodes.append(
+            Episode(
+                index=int(raw.get("index") or 0),
+                title=str(raw.get("title") or "Untitled"),
+                audio_url=str(raw.get("audio_url") or raw.get("url") or ""),
+                published=str(raw.get("published") or raw.get("date") or ""),
+                duration=str(raw.get("duration") or ""),
+                guid=str(raw.get("guid") or ""),
+                size=int(raw.get("size") or 0),
+            )
         )
+    local_rows, local_done = mark_episodes_local(out_dir, body.show_name, episodes)
+    rows = []
+    for ep, local in zip(episodes, local_rows):
         row = {"index": ep.index}
-        row.update(episode_local_status(out_dir, body.show_name, ep))
-        if row.get("downloaded"):
-            local_done += 1
+        row.update(local)
         rows.append(row)
     return {
         "out_dir": str(out_dir),

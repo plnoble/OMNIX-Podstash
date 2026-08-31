@@ -8,7 +8,8 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
 class Store(context: Context) {
-    val root: File = File(context.getExternalFilesDir(null), "library").apply { mkdirs() }
+    private val appContext = context.applicationContext
+    val root: File = File(appContext.getExternalFilesDir(null), "library").apply { mkdirs() }
     private val stateFile = File(root, "library.json")
     private val lock = ReentrantLock()
 
@@ -47,9 +48,9 @@ class Store(context: Context) {
         }
     }
 
-    fun showDir(show: Show): File {
+    fun showDir(show: Show, create: Boolean = true): File {
         val name = sanitize(show.name.ifBlank { "Podcast" })
-        return File(root, name).apply { mkdirs() }
+        return File(root, name).apply { if (create) mkdirs() }
     }
 
     fun upsertShow(show: Show) {
@@ -101,6 +102,14 @@ class Store(context: Context) {
     }
 
     fun rememberFile(show: Show, ep: Episode, file: File) {
+        rememberHit(show, ep, file.name, file.length(), file.absolutePath, uri = "")
+    }
+
+    fun rememberUri(show: Show, ep: Episode, name: String, size: Long, uri: String) {
+        rememberHit(show, ep, name, size, absPath = "", uri = uri)
+    }
+
+    private fun rememberHit(show: Show, ep: Episode, name: String, size: Long, absPath: String, uri: String) {
         val dir = showDir(show)
         val indexFile = File(dir, INDEX)
         lock.withLock {
@@ -108,9 +117,11 @@ class Store(context: Context) {
             val eps = obj.optJSONObject("episodes") ?: JSONObject()
             val rec = JSONObject()
                 .put("title", ep.title)
-                .put("file", file.name)
-                .put("size", file.length())
-                .put("complete", file.length() >= MIN_COMPLETE)
+                .put("file", name)
+                .put("abs", absPath)
+                .put("uri", uri)
+                .put("size", size)
+                .put("complete", size >= MIN_COMPLETE)
                 .put("guid", ep.guid)
             listOf(ep.guid, ep.audioUrl, sanitize(ep.title)).filter { it.isNotBlank() }.forEach {
                 eps.put(it, rec)
@@ -121,15 +132,72 @@ class Store(context: Context) {
     }
 
     fun localStatus(show: Show, ep: Episode): Episode {
-        val dir = showDir(show)
-        val found = findExisting(dir, ep) ?: return ep
-        val complete = found.length() >= MIN_COMPLETE &&
-            (ep.size <= 0 || found.length() >= (ep.size * 0.98).toLong())
-        return ep.copy(
-            localPath = found.absolutePath,
-            downloaded = complete,
-            partial = !complete && found.length() > 0,
-        )
+        val dir = showDir(show, create = false)
+        val found = findExisting(dir, ep)
+        if (found != null) {
+            val complete = found.length() >= MIN_COMPLETE &&
+                (ep.size <= 0 || found.length() >= (ep.size * 0.98).toLong())
+            return ep.copy(
+                localPath = found.absolutePath,
+                downloaded = complete,
+                partial = !complete && found.length() > 0,
+            )
+        }
+        val indexed = findIndexUri(dir, ep)
+        if (indexed != null) {
+            val (uri, complete) = indexed
+            return ep.copy(localPath = uri, downloaded = complete, partial = !complete)
+        }
+        return ep
+    }
+
+    fun scanAndMark(show: Show, episodes: List<Episode>): List<Episode> {
+        if (episodes.isEmpty()) return episodes
+        val prelim = episodes.map { localStatus(show, it) }
+        val hits = LibraryScan.listAppLibrary(root, show.name).toMutableList()
+        if (treeUri.isNotBlank()) {
+            hits += LibraryScan.listSaf(appContext, treeUri, show.name)
+        }
+        val remaining = prelim.filter { !it.downloaded }
+        val taken = prelim.map { it.localPath }.filter { it.isNotBlank() }.toSet()
+        val free = hits.distinctBy { it.path }.filter { it.path !in taken }
+        val assigned = LibraryScan.assign(remaining, free, show.name)
+        return prelim.map { ep ->
+            val hit = assigned[ep.index] ?: return@map ep
+            val complete = hit.size >= MIN_COMPLETE &&
+                (ep.size <= 0 || hit.size >= (ep.size * 0.98).toLong())
+            if (hit.path.startsWith("content://")) {
+                rememberUri(show, ep, hit.name, hit.size, hit.path)
+            } else {
+                val f = File(hit.path)
+                if (f.exists()) rememberFile(show, ep, f)
+            }
+            ep.copy(
+                localPath = hit.path,
+                downloaded = complete,
+                partial = !complete && hit.size > 0,
+            )
+        }
+    }
+
+    fun findIndexUri(dir: File, ep: Episode): Pair<String, Boolean>? {
+        val indexFile = File(dir, INDEX)
+        if (!indexFile.exists()) return null
+        return try {
+            val eps = JSONObject(indexFile.readText()).optJSONObject("episodes") ?: return null
+            for (key in listOf(ep.guid, ep.audioUrl, sanitize(ep.title))) {
+                if (key.isBlank()) continue
+                val rec = eps.optJSONObject(key) ?: continue
+                val uri = rec.optString("uri")
+                if (!uri.startsWith("content://")) continue
+                val size = rec.optLong("size")
+                val complete = rec.optBoolean("complete", size >= MIN_COMPLETE)
+                return uri to complete
+            }
+            null
+        } catch (_: Exception) {
+            null
+        }
     }
 
     fun findExisting(dir: File, ep: Episode): File? {
@@ -141,8 +209,15 @@ class Store(context: Context) {
                     for (key in listOf(ep.guid, ep.audioUrl, sanitize(ep.title))) {
                         if (key.isBlank()) continue
                         val rec = eps.optJSONObject(key) ?: continue
+                        val abs = rec.optString("abs")
+                        if (abs.isNotBlank()) {
+                            val af = File(abs)
+                            if (af.exists() && af.length() > 0) return af
+                        }
                         val name = rec.optString("file")
                         if (name.isBlank()) continue
+                        val named = File(name)
+                        if (named.isAbsolute && named.exists() && named.length() > 0) return named
                         val f = File(dir, File(name).name)
                         if (f.exists() && f.length() > 0) return f
                     }
@@ -160,9 +235,26 @@ class Store(context: Context) {
     fun destFile(show: Show, ep: Episode): File {
         val dir = showDir(show)
         findExisting(dir, ep)?.let { return it }
+        fuzzyInDir(dir, ep)?.let { return it }
+        val marked = localStatus(show, ep)
+        if (marked.downloaded && marked.localPath.isNotBlank() && !marked.localPath.startsWith("content://")) {
+            val existing = File(marked.localPath)
+            if (existing.exists()) return existing
+        }
         val base = sanitize(ep.title).ifBlank { sanitize(ep.guid.ifBlank { "episode" }) }
         val ext = guessExt(ep.audioUrl)
         return File(dir, "$base$ext")
+    }
+
+    private fun fuzzyInDir(dir: File, ep: Episode): File? {
+        if (!dir.exists()) return null
+        val audio = dir.listFiles()?.filter { it.isFile && LibraryScan.isAudio(it.name) && it.length() > 0 } ?: return null
+        val ranked = audio.map { it to LibraryScan.score(ep.title, it.name, dir.name) }
+            .filter { it.second >= 80 }
+            .sortedByDescending { it.second }
+        if (ranked.isEmpty()) return null
+        if (ranked.size >= 2 && ranked[0].second == ranked[1].second && ranked[0].second < 90) return null
+        return ranked[0].first
     }
 
     private fun load() {

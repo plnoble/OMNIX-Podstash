@@ -79,7 +79,7 @@ async function saveSettings() {
     $("outDir").value = s.out_dir;
     $("concurrency").value = s.concurrency;
     toast("设置已保存");
-    refreshLocalStatus();
+    if (state.show) await scanExisting(true);
   } catch (e) {
     toast(e.message);
   }
@@ -352,7 +352,14 @@ function selectUndownloaded() {
 }
 
 async function refreshLocalStatus() {
-  if (!state.show || !state.episodes.length) return;
+  await scanExisting(false);
+}
+
+async function scanExisting(notify) {
+  if (!state.show || !state.episodes.length) {
+    if (notify) toast("请先加载一档节目，再检测该节目在目录里的已有文件");
+    return;
+  }
   try {
     const data = await api("/api/local-status", {
       method: "POST",
@@ -368,8 +375,12 @@ async function refreshLocalStatus() {
       ...(byIndex.get(e.index) || {}),
     }));
     renderEpisodes();
-  } catch {
-    /* ignore — download skip still works server-side */
+    if (notify) {
+      const n = data.local_downloaded || 0;
+      toast(n ? `已标记 ${n} 集为已下载，不会重复下载` : "该目录里没有识别到已有文件（文件名需包含单集标题）");
+    }
+  } catch (e) {
+    if (notify) toast(e.message);
   }
 }
 
@@ -589,6 +600,8 @@ function bind() {
     if (e.key === "Enter") doResolve();
   });
   $("btnSaveSettings").addEventListener("click", saveSettings);
+  $("btnScanLibrary").addEventListener("click", () => scanExisting(true));
+  $("btnScanShow").addEventListener("click", () => scanExisting(true));
   $("btnAll").addEventListener("click", selectAllVisible);
   $("btnUndownloaded").addEventListener("click", selectUndownloaded);
   $("btnNone").addEventListener("click", clearSelection);
