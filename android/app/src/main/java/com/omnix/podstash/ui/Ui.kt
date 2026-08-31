@@ -16,21 +16,29 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Forward30
 import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -44,6 +52,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
@@ -68,8 +77,11 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.omnix.podstash.AppViewModel
 import com.omnix.podstash.BuildConfig
+import com.omnix.podstash.data.DlStatus
 import com.omnix.podstash.data.Episode
+import com.omnix.podstash.data.QueueItem
 import com.omnix.podstash.data.Show
+import kotlin.math.max
 
 private val Bg = Color(0xFF0F1115)
 private val Surface = Color(0xFF171A21)
@@ -78,10 +90,17 @@ private val Accent = Color(0xFF6C8CFF)
 private val Ok = Color(0xFF3ECF8E)
 private val Muted = Color(0xFF8B95A8)
 private val TextC = Color(0xFFE8ECF4)
+private val Warn = Color(0xFFF0B429)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PodstashRoot(vm: AppViewModel) {
+fun PodstashRoot(
+    vm: AppViewModel,
+    onPickFolder: () -> Unit = {},
+    onImportOpml: () -> Unit = {},
+    onExportOpml: () -> Unit = {},
+    onOpenFolder: () -> Unit = {},
+) {
     val state by vm.ui.collectAsState()
     val snack = remember { SnackbarHostState() }
     LaunchedEffect(state.toast) {
@@ -100,57 +119,60 @@ fun PodstashRoot(vm: AppViewModel) {
             onSurface = TextC,
         ),
     ) {
-        Scaffold(
-            containerColor = Bg,
-            snackbarHost = { SnackbarHost(snack) },
-            bottomBar = {
-                Column {
-                    state.playing?.let { MiniPlayer(it, state.playingShow) }
-                    NavigationBar(containerColor = Surface) {
-                        NavigationBarItem(
-                            selected = state.tab == 0,
-                            onClick = { vm.setTab(0) },
-                            icon = { Icon(Icons.Default.LibraryMusic, null) },
-                            label = { Text("库") },
-                            colors = navColors(),
-                        )
-                        NavigationBarItem(
-                            selected = state.tab == 1 || state.tab == 3,
-                            onClick = { vm.setTab(1) },
-                            icon = { Icon(Icons.Default.Explore, null) },
-                            label = { Text("发现") },
-                            colors = navColors(),
-                        )
-                        NavigationBarItem(
-                            selected = state.tab == 2,
-                            onClick = { vm.setTab(2) },
-                            icon = { Icon(Icons.Default.Settings, null) },
-                            label = { Text("设置") },
-                            colors = navColors(),
-                        )
+        Box(Modifier.fillMaxSize()) {
+            Scaffold(
+                containerColor = Bg,
+                snackbarHost = { SnackbarHost(snack) },
+                bottomBar = {
+                    Column {
+                        state.playing?.let { MiniPlayer(vm, it, state.playingShow, state.playerPlaying) }
+                        NavigationBar(containerColor = Surface) {
+                            NavigationBarItem(
+                                selected = state.tab == 0,
+                                onClick = { vm.setTab(0) },
+                                icon = { Icon(Icons.Default.LibraryMusic, null) },
+                                label = { Text("库") },
+                                colors = navColors(),
+                            )
+                            NavigationBarItem(
+                                selected = state.tab == 1 || state.tab == 3,
+                                onClick = { vm.setTab(1) },
+                                icon = { Icon(Icons.Default.Explore, null) },
+                                label = { Text("发现") },
+                                colors = navColors(),
+                            )
+                            NavigationBarItem(
+                                selected = state.tab == 2,
+                                onClick = { vm.setTab(2) },
+                                icon = { Icon(Icons.Default.Settings, null) },
+                                label = { Text("设置") },
+                                colors = navColors(),
+                            )
+                        }
                     }
-                }
-            },
-        ) { pad ->
-            Box(Modifier.fillMaxSize().padding(pad)) {
-                when (state.tab) {
-                    0 -> LibraryPane(vm)
-                    1 -> DiscoverPane(vm)
-                    2 -> SettingsPane(vm)
-                    3 -> ShowPane(vm)
-                }
-                if (state.loading.isNotBlank()) {
-                    Row(
-                        Modifier.align(Alignment.TopCenter).padding(12.dp)
-                            .clip(RoundedCornerShape(20.dp)).background(Soft).padding(12.dp, 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        CircularProgressIndicator(Modifier.size(16.dp), color = Accent, strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text(state.loading, color = Muted, fontSize = 13.sp)
+                },
+            ) { pad ->
+                Box(Modifier.fillMaxSize().padding(pad)) {
+                    when (state.tab) {
+                        0 -> LibraryPane(vm)
+                        1 -> DiscoverPane(vm)
+                        2 -> SettingsPane(vm, onPickFolder, onImportOpml, onExportOpml, onOpenFolder)
+                        3 -> ShowPane(vm)
+                    }
+                    if (state.loading.isNotBlank()) {
+                        Row(
+                            Modifier.align(Alignment.TopCenter).padding(12.dp)
+                                .clip(RoundedCornerShape(20.dp)).background(Soft).padding(12.dp, 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CircularProgressIndicator(Modifier.size(16.dp), color = Accent, strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text(state.loading, color = Muted, fontSize = 13.sp)
+                        }
                     }
                 }
             }
+            if (state.playerOpen) PlayerSheet(vm)
         }
         state.update?.let { info ->
             AlertDialog(
@@ -189,17 +211,95 @@ private fun navColors() = NavigationBarItemDefaults.colors(
 
 @Composable
 private fun LibraryPane(vm: AppViewModel) {
+    val state by vm.ui.collectAsState()
     val subs = vm.subscribed
+    val last = vm.lastPlayed
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             Text("OMNIX-Podstash", color = TextC, fontSize = 22.sp, fontWeight = FontWeight.Bold)
             Text("私人播客库 · 已关注 ${subs.size} 档", color = Muted, fontSize = 13.sp)
         }
+        if (last != null) {
+            item {
+                Text("继续听", color = TextC, fontWeight = FontWeight.SemiBold)
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Soft)
+                        .clickable { vm.continueLast() }.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AsyncImage(
+                        model = last.show.artwork,
+                        contentDescription = null,
+                        modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)).background(Bg),
+                        contentScale = ContentScale.Crop,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(last.episode.title, color = TextC, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(last.show.name, color = Muted, fontSize = 12.sp, maxLines = 1)
+                    }
+                    Icon(Icons.Default.PlayArrow, null, tint = Accent)
+                }
+            }
+        }
+        val q = state.queue.filter { it.status in setOf(DlStatus.queued, DlStatus.running, DlStatus.paused, DlStatus.error) }
+        if (q.isNotEmpty()) {
+            item { QueueBar(vm, q, state.downloadsPaused) }
+        }
         if (subs.isEmpty()) {
-            item { Text("还没有关注的节目。到「发现」里点进一档，再点星标关注。打开应用会自动下新集，不会重复下载。", color = Muted) }
+            item { Text("还没有关注的节目。到「发现」里点进一档，再点星标关注。", color = Muted) }
+        } else {
+            item { Text("已关注", color = TextC, fontWeight = FontWeight.SemiBold) }
         }
         items(subs, key = { it.id + it.feedUrl }) { s ->
             ShowCard(s) { vm.openShow(s.feedUrl.ifBlank { s.id }, s) }
+        }
+    }
+}
+
+@Composable
+private fun QueueBar(vm: AppViewModel, q: List<QueueItem>, paused: Boolean) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Soft).padding(12.dp)) {
+        val run = q.count { it.status == DlStatus.running }
+        val wait = q.count { it.status == DlStatus.queued || it.status == DlStatus.paused }
+        val err = q.count { it.status == DlStatus.error }
+        Text(
+            "下载队列 · 进行中 $run · 等待 $wait" + if (err > 0) " · 失败 $err" else "",
+            color = TextC,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (paused) {
+                Button(onClick = { vm.resumeDownloads() }, colors = ButtonDefaults.buttonColors(containerColor = Accent)) {
+                    Text("继续下载")
+                }
+            } else {
+                Button(onClick = { vm.pauseDownloads() }, colors = ButtonDefaults.buttonColors(containerColor = Soft)) {
+                    Text("暂停下载")
+                }
+            }
+            if (err > 0) {
+                TextButton(onClick = { vm.retryFailed() }) { Text("重试失败", color = Accent) }
+            }
+        }
+        q.take(4).forEach { item ->
+            val label = when (item.status) {
+                DlStatus.running -> "下载中"
+                DlStatus.paused -> "已暂停"
+                DlStatus.queued -> "等待"
+                DlStatus.error -> "失败"
+                else -> item.status.name
+            }
+            Text("${item.episode.title.take(28)} · $label", color = Muted, fontSize = 11.sp, maxLines = 1)
+            if (item.bytesTotal > 0 && item.status == DlStatus.running) {
+                LinearProgressIndicator(
+                    progress = { (item.bytesDone.toFloat() / item.bytesTotal).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    color = Accent,
+                )
+            }
         }
     }
 }
@@ -289,40 +389,95 @@ private fun ShowPane(vm: AppViewModel) {
                 )
             }
             Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Button(onClick = { vm.downloadUndownloaded() }, colors = ButtonDefaults.buttonColors(containerColor = Accent)) {
                     Text("下载未有")
                 }
-                TextButton(onClick = { vm.setTab(1) }) { Text("返回发现", color = Muted) }
+                Button(
+                    onClick = { if (state.selectMode) vm.enqueueSelected() else vm.setSelectMode(true) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Soft),
+                ) {
+                    Text(if (state.selectMode) "下载已选 ${state.selected.size}" else "多选下载")
+                }
             }
+            if (state.selectMode) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextButton(onClick = { vm.selectAllVisible() }) { Text("全选", color = Accent) }
+                    TextButton(onClick = { vm.clearSelected() }) { Text("清空", color = Muted) }
+                    TextButton(onClick = { vm.setSelectMode(false) }) { Text("取消多选", color = Muted) }
+                }
+            }
+            val q = state.queue.filter { it.status in setOf(DlStatus.queued, DlStatus.running, DlStatus.paused, DlStatus.error) }
+            if (q.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                QueueBar(vm, q, state.downloadsPaused)
+            }
+            TextButton(onClick = { vm.setTab(1) }) { Text("返回发现", color = Muted) }
         }
         items(state.episodes, key = { it.guid.ifBlank { it.audioUrl + it.index } }) { ep ->
-            EpisodeRow(ep, onPlay = { vm.play(ep) }, onDownload = { vm.download(ep) })
+            val k = ep.guid.ifBlank { ep.audioUrl + ep.index }
+            EpisodeRow(
+                ep = ep,
+                selectMode = state.selectMode,
+                selected = k in state.selected,
+                onToggleSelect = { vm.toggleSelect(ep) },
+                onPlay = { vm.play(ep) },
+                onDownload = { vm.download(ep) },
+            )
         }
     }
 }
 
 @Composable
-private fun SettingsPane(vm: AppViewModel) {
-    Column(Modifier.padding(16.dp)) {
+private fun SettingsPane(
+    vm: AppViewModel,
+    onPickFolder: () -> Unit,
+    onImportOpml: () -> Unit,
+    onExportOpml: () -> Unit,
+    onOpenFolder: () -> Unit,
+) {
+    Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
         Text("设置", color = TextC, fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(12.dp))
         Text("版本 ${BuildConfig.VERSION_NAME}  (${BuildConfig.VERSION_CODE})", color = TextC)
         Text("GitHub plnoble/OMNIX-Podstash", color = Muted, fontSize = 13.sp)
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(20.dp))
+        Text("下载目录", color = TextC, fontWeight = FontWeight.SemiBold)
+        Text(vm.libraryPath, color = Muted, fontSize = 12.sp)
+        if (vm.pickedFolder) {
+            Text("另外会复制到你选择的系统文件夹", color = Ok, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onPickFolder, colors = ButtonDefaults.buttonColors(containerColor = Accent)) {
+                Icon(Icons.Default.Folder, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("选择文件夹")
+            }
+            TextButton(onClick = onOpenFolder) { Text("打开目录", color = Accent) }
+        }
+        Spacer(Modifier.height(20.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("仅 Wi-Fi 下载", color = TextC)
-                Text("关注节目后，打开应用会检查新集并自动下载", color = Muted, fontSize = 12.sp)
+                Text("流量网络时排队，不自动下", color = Muted, fontSize = 12.sp)
             }
             Switch(checked = vm.wifiOnly, onCheckedChange = vm::setWifiOnly)
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(20.dp))
+        Text("订阅 OPML", color = TextC, fontWeight = FontWeight.SemiBold)
+        Text("从苹果播客、AntennaPod 等导入关注列表；导入后不会整档下载。", color = Muted, fontSize = 12.sp)
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onImportOpml, colors = ButtonDefaults.buttonColors(containerColor = Soft)) { Text("导入 OPML") }
+            Button(onClick = onExportOpml, colors = ButtonDefaults.buttonColors(containerColor = Soft)) { Text("导出 OPML") }
+        }
+        Spacer(Modifier.height(20.dp))
         Button(onClick = { vm.checkUpdate() }, colors = ButtonDefaults.buttonColors(containerColor = Accent)) {
             Text("检查更新")
         }
         Spacer(Modifier.height(24.dp))
-        Text("音频保存在应用专属目录，不经过任何中转站。已有完整文件会跳过。个人备份请遵守节目版权。", color = Muted, fontSize = 12.sp)
+        Text("应用目录始终可播。若选择了系统文件夹，下完后会再复制一份进去。个人备份请遵守节目版权。", color = Muted, fontSize = 12.sp)
     }
 }
 
@@ -359,40 +514,146 @@ private fun ShowCard(show: Show, rank: Int = 0, onClick: () -> Unit) {
 }
 
 @Composable
-private fun EpisodeRow(ep: Episode, onPlay: () -> Unit, onDownload: () -> Unit) {
+private fun EpisodeRow(
+    ep: Episode,
+    selectMode: Boolean,
+    selected: Boolean,
+    onToggleSelect: () -> Unit,
+    onPlay: () -> Unit,
+    onDownload: () -> Unit,
+) {
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Soft).padding(10.dp),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Soft).padding(10.dp)
+            .clickable { if (selectMode) onToggleSelect() else onPlay() },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f).clickable(onClick = onPlay)) {
+        if (selectMode) {
+            Checkbox(checked = selected, onCheckedChange = { onToggleSelect() })
+        }
+        Column(Modifier.weight(1f)) {
             Text(ep.title, color = if (ep.downloaded) Muted else TextC, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(
-                listOf(ep.published.ifBlank { "日期未知" }, ep.duration).filter { it.isNotBlank() }.joinToString(" · "),
-                color = Muted,
+                listOf(ep.published.ifBlank { "日期未知" }, ep.duration, if (ep.partial) "未下完" else "").filter { it.isNotBlank() }.joinToString(" · "),
+                color = if (ep.partial) Warn else Muted,
                 fontSize = 12.sp,
             )
         }
-        if (ep.downloaded) {
-            Icon(Icons.Default.Check, null, tint = Ok, modifier = Modifier.size(22.dp).clickable(onClick = onPlay))
-        } else {
-            Icon(Icons.Default.Download, null, tint = Accent, modifier = Modifier.size(22.dp).clickable(onClick = onDownload))
+        if (!selectMode) {
+            if (ep.downloaded) {
+                Icon(Icons.Default.Check, null, tint = Ok, modifier = Modifier.size(22.dp).clickable(onClick = onPlay))
+            } else {
+                Icon(Icons.Default.Download, null, tint = Accent, modifier = Modifier.size(22.dp).clickable(onClick = onDownload))
+            }
+            Spacer(Modifier.width(8.dp))
+            Icon(Icons.Default.PlayArrow, null, tint = TextC, modifier = Modifier.size(26.dp).clickable(onClick = onPlay))
         }
-        Spacer(Modifier.width(8.dp))
-        Icon(Icons.Default.PlayArrow, null, tint = TextC, modifier = Modifier.size(26.dp).clickable(onClick = onPlay))
     }
 }
 
 @Composable
-private fun MiniPlayer(ep: Episode, show: Show?) {
+private fun MiniPlayer(vm: AppViewModel, ep: Episode, show: Show?, playing: Boolean) {
+    val state by vm.ui.collectAsState()
     Row(
-        Modifier.fillMaxWidth().background(Soft).padding(12.dp, 8.dp),
+        Modifier.fillMaxWidth().background(Soft).clickable { vm.openPlayer(true) }.padding(12.dp, 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(Icons.Default.PlayArrow, null, tint = Accent)
+        Icon(
+            if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+            null,
+            tint = Accent,
+            modifier = Modifier.clickable { vm.togglePlayPause() },
+        )
         Spacer(Modifier.width(8.dp))
         Column(Modifier.weight(1f)) {
             Text(ep.title, color = TextC, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp)
             Text(show?.name.orEmpty(), color = Muted, fontSize = 11.sp, maxLines = 1)
+            if (state.playerDur > 0) {
+                LinearProgressIndicator(
+                    progress = { (state.playerPos.toFloat() / state.playerDur).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    color = Accent,
+                )
+            }
         }
     }
+}
+
+@Composable
+private fun PlayerSheet(vm: AppViewModel) {
+    val state by vm.ui.collectAsState()
+    val ep = state.playing ?: return
+    val show = state.playingShow
+    Column(
+        Modifier.fillMaxSize().background(Bg).padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Icon(Icons.Default.Close, null, tint = TextC, modifier = Modifier.clickable { vm.openPlayer(false) })
+            Text("正在播放", color = Muted, fontSize = 13.sp)
+            Spacer(Modifier.width(24.dp))
+        }
+        Spacer(Modifier.height(24.dp))
+        AsyncImage(
+            model = show?.artwork,
+            contentDescription = null,
+            modifier = Modifier.size(240.dp).clip(RoundedCornerShape(16.dp)).background(Soft),
+            contentScale = ContentScale.Crop,
+        )
+        Spacer(Modifier.height(20.dp))
+        Text(ep.title, color = TextC, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+        Text(show?.name.orEmpty(), color = Muted, fontSize = 14.sp)
+        Spacer(Modifier.height(16.dp))
+        val dur = max(state.playerDur, 1L)
+        Slider(
+            value = (state.playerPos.toFloat() / dur).coerceIn(0f, 1f),
+            onValueChange = { vm.seekTo((it * dur).toLong()) },
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(fmtTime(state.playerPos), color = Muted, fontSize = 12.sp)
+            Text(fmtTime(state.playerDur), color = Muted, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(28.dp)) {
+            Icon(Icons.Default.Replay10, null, tint = TextC, modifier = Modifier.size(36.dp).clickable { vm.skipBy(-10_000) })
+            Icon(
+                if (state.playerPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                null,
+                tint = Accent,
+                modifier = Modifier.size(56.dp).clickable { vm.togglePlayPause() },
+            )
+            Icon(Icons.Default.Forward30, null, tint = TextC, modifier = Modifier.size(36.dp).clickable { vm.skipBy(30_000) })
+        }
+        Spacer(Modifier.height(16.dp))
+        Text("倍速", color = Muted, fontSize = 12.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(0.8f, 1f, 1.2f, 1.5f, 2f).forEach { s ->
+                FilterChip(
+                    selected = kotlin.math.abs(vm.speed - s) < 0.01f,
+                    onClick = { vm.setSpeed(s) },
+                    label = { Text("${s}x") },
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Soft, selectedLabelColor = Accent),
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(
+            if (state.sleepLeftMs > 0) "睡眠剩余 ${fmtTime(state.sleepLeftMs)}" else "睡眠定时",
+            color = Muted,
+            fontSize = 12.sp,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(15, 30, 45, 60).forEach { m ->
+                TextButton(onClick = { vm.setSleepMinutes(m) }) { Text("${m}分", color = Accent) }
+            }
+            TextButton(onClick = { vm.setSleepMinutes(0) }) { Text("关", color = Muted) }
+        }
+    }
+}
+
+private fun fmtTime(ms: Long): String {
+    if (ms <= 0) return "0:00"
+    val s = (ms / 1000).toInt()
+    val m = s / 60
+    val r = s % 60
+    return if (m >= 60) "%d:%02d:%02d".format(m / 60, m % 60, r) else "%d:%02d".format(m, r)
 }

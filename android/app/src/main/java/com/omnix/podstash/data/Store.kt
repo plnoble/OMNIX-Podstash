@@ -22,9 +22,29 @@ class Store(context: Context) {
         private set
     var skippedVersionCode: Int = 0
         private set
+    var treeUri: String = ""
+        private set
+    var lastPlayed: LastPlayed? = null
+        private set
 
     init {
         load()
+    }
+
+    fun libraryPath(): String = root.absolutePath
+
+    fun setTreeUri(uri: String) {
+        lock.withLock {
+            treeUri = uri
+            persist()
+        }
+    }
+
+    fun setLastPlayed(lp: LastPlayed?) {
+        lock.withLock {
+            lastPlayed = lp
+            persist()
+        }
     }
 
     fun showDir(show: Show): File {
@@ -152,6 +172,33 @@ class Store(context: Context) {
             wifiOnly = o.optBoolean("wifiOnly", true)
             speed = o.optDouble("speed", 1.0).toFloat()
             skippedVersionCode = o.optInt("skippedVersionCode", 0)
+            treeUri = o.optString("treeUri")
+            o.optJSONObject("lastPlayed")?.let { lp ->
+                val sh = lp.optJSONObject("show") ?: return@let
+                val ep = lp.optJSONObject("episode") ?: return@let
+                lastPlayed = LastPlayed(
+                    guid = lp.optString("guid"),
+                    position = lp.optLong("position"),
+                    show = Show(
+                        id = sh.optString("id"),
+                        name = sh.optString("name"),
+                        author = sh.optString("author"),
+                        artwork = sh.optString("artwork"),
+                        feedUrl = sh.optString("feedUrl"),
+                        subscribed = sh.optBoolean("subscribed"),
+                    ),
+                    episode = Episode(
+                        index = ep.optInt("index"),
+                        title = ep.optString("title"),
+                        audioUrl = ep.optString("audioUrl"),
+                        published = ep.optString("published"),
+                        duration = ep.optString("duration"),
+                        guid = ep.optString("guid"),
+                        localPath = ep.optString("localPath"),
+                        downloaded = ep.optBoolean("downloaded"),
+                    ),
+                )
+            }
             val pos = o.optJSONObject("positions")
             if (pos != null) {
                 pos.keys().forEach { positions[it] = pos.optLong(it) }
@@ -193,6 +240,33 @@ class Store(context: Context) {
         }
         val pos = JSONObject()
         positions.forEach { (k, v) -> pos.put(k, v) }
+        val lp = lastPlayed?.let {
+            JSONObject()
+                .put("guid", it.guid)
+                .put("position", it.position)
+                .put(
+                    "show",
+                    JSONObject()
+                        .put("id", it.show.id)
+                        .put("name", it.show.name)
+                        .put("author", it.show.author)
+                        .put("artwork", it.show.artwork)
+                        .put("feedUrl", it.show.feedUrl)
+                        .put("subscribed", it.show.subscribed),
+                )
+                .put(
+                    "episode",
+                    JSONObject()
+                        .put("index", it.episode.index)
+                        .put("title", it.episode.title)
+                        .put("audioUrl", it.episode.audioUrl)
+                        .put("published", it.episode.published)
+                        .put("duration", it.episode.duration)
+                        .put("guid", it.episode.guid)
+                        .put("localPath", it.episode.localPath)
+                        .put("downloaded", it.episode.downloaded),
+                )
+        }
         stateFile.writeText(
             JSONObject()
                 .put("shows", arr)
@@ -200,6 +274,8 @@ class Store(context: Context) {
                 .put("speed", speed.toDouble())
                 .put("wifiOnly", wifiOnly)
                 .put("skippedVersionCode", skippedVersionCode)
+                .put("treeUri", treeUri)
+                .put("lastPlayed", lp ?: JSONObject.NULL)
                 .toString(),
         )
     }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0
+
+- Android：暂停 / 继续下载（断点续传）
+- Android：设置里显示下载目录，可选择系统文件夹（完成后复制一份）
+- Android：节目页多选后下载已选；仍保留「下载未有」
+- Android：播放页进度条、倍速、±10/30 秒、睡眠定时、继续听
+- Android：库首页下载队列；OPML 导入 / 导出
+
 ## 0.1.1
 
 - 修复 Android 启动图标 XML，使 GitHub Actions 能打出 APK

@@ -1,7 +1,7 @@
 {
-  "version": "0.1.1",
-  "versionCode": 2,
+  "version": "0.2.0",
+  "versionCode": 3,
   "minSdk": 26,
-  "notes": "首发：搜索、下载、播放、已有跳过、关注后打开即下新集、GitHub 应用内更新。",
+  "notes": "暂停/继续下载；显示并选择保存文件夹；多选下载；播放器进度/倍速/睡眠/继续听；OPML 导入导出。",
   "repo": "plnoble/OMNIX-Podstash"
 }

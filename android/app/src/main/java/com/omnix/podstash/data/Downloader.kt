@@ -5,7 +5,9 @@ import android.app.NotificationManager
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.Uri
 import androidx.core.app.NotificationCompat
+import androidx.documentfile.provider.DocumentFile
 import com.omnix.podstash.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -15,6 +17,9 @@ import java.io.RandomAccessFile
 
 class Downloader(private val context: Context, private val store: Store) {
     private val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+    @Volatile var paused: Boolean = false
+    @Volatile var abortCurrent: Boolean = false
 
     init {
         nm.createNotificationChannel(
@@ -29,12 +34,21 @@ class Downloader(private val context: Context, private val store: Store) {
         return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
     }
 
-    suspend fun download(show: Show, episode: Episode, force: Boolean = false): Episode =
+    class Paused : Exception("paused")
+
+    suspend fun download(
+        show: Show,
+        episode: Episode,
+        force: Boolean = false,
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
+    ): Episode =
         withContext(Dispatchers.IO) {
+            abortCurrent = false
             val dest = store.destFile(show, episode)
             if (!force && dest.exists() && dest.length() >= Store.MIN_COMPLETE) {
                 val ep = episode.copy(localPath = dest.absolutePath, downloaded = true)
                 store.rememberFile(show, ep, dest)
+                copyToPickedFolder(show, dest)
                 return@withContext ep
             }
             if (store.wifiOnly && !onWifi() && !force) {
@@ -56,6 +70,7 @@ class Downloader(private val context: Context, private val store: Store) {
                         notifyDone(episode.title, true)
                         val ep = episode.copy(localPath = dest.absolutePath, downloaded = true)
                         store.rememberFile(show, ep, dest)
+                        copyToPickedFolder(show, dest)
                         return@withContext ep
                     }
                     offset = 0
@@ -64,6 +79,7 @@ class Downloader(private val context: Context, private val store: Store) {
                     notifyDone(episode.title, true)
                     val ep = episode.copy(localPath = dest.absolutePath, downloaded = true)
                     store.rememberFile(show, ep, dest)
+                    copyToPickedFolder(show, dest)
                     return@withContext ep
                 }
                 if (resp.code !in listOf(200, 206)) error("HTTP ${resp.code}")
@@ -78,21 +94,49 @@ class Downloader(private val context: Context, private val store: Store) {
                     var done = offset
                     body.byteStream().use { input ->
                         while (true) {
+                            if (paused || abortCurrent) {
+                                notify(episode.title, "已暂停", done, total)
+                                throw Paused()
+                            }
                             val n = input.read(buf)
                             if (n <= 0) break
                             raf.write(buf, 0, n)
                             done += n
+                            onProgress(done, total)
                             if (total > 0) notify(episode.title, "下载中", done, total)
                         }
                     }
                 }
             }
             if (!dest.exists() || dest.length() <= 0) error("下载结果为空")
-            val ep = episode.copy(localPath = dest.absolutePath, downloaded = dest.length() >= Store.MIN_COMPLETE)
+            val complete = dest.length() >= Store.MIN_COMPLETE
+            val ep = episode.copy(
+                localPath = dest.absolutePath,
+                downloaded = complete,
+                partial = !complete,
+            )
             store.rememberFile(show, ep, dest)
+            if (complete) copyToPickedFolder(show, dest)
             notifyDone(episode.title, ep.downloaded)
             ep
         }
+
+    private fun copyToPickedFolder(show: Show, file: File) {
+        val tree = store.treeUri
+        if (tree.isBlank() || !file.exists()) return
+        try {
+            val root = DocumentFile.fromTreeUri(context, Uri.parse(tree)) ?: return
+            val folderName = Store.sanitize(show.name.ifBlank { "Podcast" })
+            val dir = root.findFile(folderName) ?: root.createDirectory(folderName) ?: return
+            val existing = dir.findFile(file.name)
+            if (existing != null && (existing.length() >= file.length())) return
+            val dest = existing ?: dir.createFile("audio/mpeg", file.name) ?: return
+            context.contentResolver.openOutputStream(dest.uri, "w")?.use { out ->
+                file.inputStream().use { it.copyTo(out) }
+            }
+        } catch (_: Exception) {
+        }
+    }
 
     private fun notify(title: String, text: String, done: Long, total: Long) {
         val b = NotificationCompat.Builder(context, "downloads")
@@ -100,8 +144,8 @@ class Downloader(private val context: Context, private val store: Store) {
             .setContentTitle(title)
             .setContentText(text)
             .setOnlyAlertOnce(true)
-            .setOngoing(true)
-        if (total > 0) b.setProgress(1000, ((done * 1000) / total).toInt(), false)
+            .setOngoing(text == "下载中" || text == "下载中…")
+        if (total > 0) b.setProgress(1000, ((done * 1000) / total).toInt().coerceIn(0, 1000), false)
         else b.setProgress(0, 0, true)
         nm.notify(title.hashCode(), b.build())
     }

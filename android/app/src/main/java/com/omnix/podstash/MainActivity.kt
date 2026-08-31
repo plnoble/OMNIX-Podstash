@@ -1,6 +1,9 @@
 package com.omnix.podstash
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -18,6 +21,30 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission(),
     ) { }
 
+    private val pickFolder = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+            vm.setTreeUri(uri.toString())
+        }
+    }
+
+    private val pickOpml = registerForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) vm.importOpml(uri)
+    }
+
+    private val createOpml = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("text/xml"),
+    ) { uri ->
+        if (uri != null) vm.exportOpml(uri)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -30,7 +57,22 @@ class MainActivity : ComponentActivity() {
                 vm.refreshSubscriptionsOnOpen()
                 vm.checkUpdate()
             }
-            PodstashRoot(vm)
+            PodstashRoot(
+                vm = vm,
+                onPickFolder = { pickFolder.launch(null) },
+                onImportOpml = {
+                    pickOpml.launch(arrayOf("text/*", "text/xml", "application/xml", "*/*"))
+                },
+                onExportOpml = { createOpml.launch("podstash.opml") },
+                onOpenFolder = { openLibrary() },
+            )
         }
+    }
+
+    private fun openLibrary() {
+        val path = vm.libraryPath
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("library", path))
+        vm.userMessage("已复制下载目录：\n$path")
     }
 }

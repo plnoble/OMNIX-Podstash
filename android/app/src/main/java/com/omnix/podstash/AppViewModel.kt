@@ -9,8 +9,12 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import com.omnix.podstash.data.Catalog
+import com.omnix.podstash.data.DlStatus
 import com.omnix.podstash.data.Downloader
 import com.omnix.podstash.data.Episode
+import com.omnix.podstash.data.LastPlayed
+import com.omnix.podstash.data.Opml
+import com.omnix.podstash.data.QueueItem
 import com.omnix.podstash.data.Show
 import com.omnix.podstash.data.Store
 import com.omnix.podstash.data.UpdateChecker
@@ -19,8 +23,10 @@ import com.omnix.podstash.data.key
 import com.omnix.podstash.playback.PlaybackService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -33,10 +39,19 @@ data class UiState(
     val search: List<Show> = emptyList(),
     val current: Show? = null,
     val episodes: List<Episode> = emptyList(),
+    val selected: Set<String> = emptySet(),
+    val selectMode: Boolean = false,
+    val queue: List<QueueItem> = emptyList(),
+    val downloadsPaused: Boolean = false,
     val loading: String = "",
     val toast: String = "",
     val playing: Episode? = null,
     val playingShow: Show? = null,
+    val playerOpen: Boolean = false,
+    val playerPlaying: Boolean = false,
+    val playerPos: Long = 0,
+    val playerDur: Long = 0,
+    val sleepLeftMs: Long = 0,
     val update: UpdateInfo? = null,
     val updateBusy: String = "",
 )
@@ -44,6 +59,7 @@ data class UiState(
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store: Store = (app as PodstashApp).store
     private val downloader = Downloader(app, store)
+    private val player get() = getApplication<PodstashApp>().player
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui
@@ -51,8 +67,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val subscribed: List<Show> get() = store.subscribed()
     val wifiOnly: Boolean get() = store.wifiOnly
     val speed: Float get() = store.speed
+    val libraryPath: String get() = store.libraryPath()
+    val pickedFolder: Boolean get() = store.treeUri.isNotBlank()
+    val lastPlayed: LastPlayed? get() = store.lastPlayed
 
     private var refreshJob: Job? = null
+    private var queueJob: Job? = null
+    private var tickerJob: Job? = null
+    private var sleepJob: Job? = null
+    private var playListener: Player.Listener? = null
+
+    init {
+        startTicker()
+        store.lastPlayed?.let { lp ->
+            _ui.value = _ui.value.copy(playing = lp.episode, playingShow = lp.show)
+        }
+    }
 
     fun setTab(i: Int) {
         _ui.value = _ui.value.copy(tab = i)
@@ -64,6 +94,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toastConsumed() {
         _ui.value = _ui.value.copy(toast = "")
+    }
+
+    fun userMessage(msg: String) {
+        _ui.value = _ui.value.copy(toast = msg)
     }
 
     fun dismissUpdate() {
@@ -102,7 +136,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openShow(source: String, preview: Show? = null) {
         viewModelScope.launch {
-            _ui.value = _ui.value.copy(loading = "加载全集…")
+            _ui.value = _ui.value.copy(loading = "加载全集…", selectMode = false, selected = emptySet())
             try {
                 val (show, eps) = withContext(Dispatchers.IO) { Catalog.resolve(source, _ui.value.country) }
                 val merged = show.copy(
@@ -129,23 +163,46 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (next) store.setLastSeen(updated, newest)
         _ui.value = _ui.value.copy(
             current = updated,
-            toast = if (next) "已关注。下次打开会自动下新集（不会重下整档）" else "已取消关注",
+            toast = if (next) "已关注。下次打开会自动下新集" else "已取消关注",
         )
+    }
+
+    fun setSelectMode(on: Boolean) {
+        _ui.value = _ui.value.copy(selectMode = on, selected = if (on) _ui.value.selected else emptySet())
+    }
+
+    fun toggleSelect(ep: Episode) {
+        val k = epKey(ep)
+        val next = _ui.value.selected.toMutableSet()
+        if (!next.add(k)) next.remove(k)
+        _ui.value = _ui.value.copy(selected = next, selectMode = true)
+    }
+
+    fun selectAllVisible() {
+        _ui.value = _ui.value.copy(
+            selectMode = true,
+            selected = _ui.value.episodes.map { epKey(it) }.toSet(),
+        )
+    }
+
+    fun clearSelected() {
+        _ui.value = _ui.value.copy(selected = emptySet())
+    }
+
+    fun enqueueSelected() {
+        val show = _ui.value.current ?: return
+        val picked = _ui.value.episodes.filter { epKey(it) in _ui.value.selected }
+        if (picked.isEmpty()) {
+            _ui.value = _ui.value.copy(toast = "请先勾选要下载的单集")
+            return
+        }
+        enqueue(show, picked)
+        _ui.value = _ui.value.copy(selectMode = false, selected = emptySet())
     }
 
     fun download(ep: Episode, force: Boolean = false) {
         val show = _ui.value.current ?: return
-        viewModelScope.launch {
-            try {
-                val done = downloader.download(show, ep, force)
-                _ui.value = _ui.value.copy(
-                    episodes = _ui.value.episodes.map { if (it.guid == ep.guid) done else it },
-                    toast = if (done.downloaded) "已在库中：${ep.title}" else "下载未完成",
-                )
-            } catch (e: Exception) {
-                _ui.value = _ui.value.copy(toast = e.message ?: "下载失败")
-            }
-        }
+        enqueue(show, listOf(ep), force)
     }
 
     fun downloadUndownloaded() {
@@ -155,38 +212,127 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _ui.value = _ui.value.copy(toast = "全部已在库中")
             return
         }
-        viewModelScope.launch {
-            var n = 0
-            for (ep in pending) {
+        enqueue(show, pending)
+    }
+
+    fun pauseDownloads() {
+        downloader.paused = true
+        downloader.abortCurrent = true
+        _ui.value = _ui.value.copy(
+            downloadsPaused = true,
+            queue = _ui.value.queue.map {
+                if (it.status == DlStatus.running || it.status == DlStatus.queued) it.copy(status = DlStatus.paused) else it
+            },
+            toast = "已暂停下载，可随时继续",
+        )
+    }
+
+    fun resumeDownloads() {
+        downloader.paused = false
+        downloader.abortCurrent = false
+        _ui.value = _ui.value.copy(
+            downloadsPaused = false,
+            queue = _ui.value.queue.map {
+                if (it.status == DlStatus.paused) it.copy(status = DlStatus.queued) else it
+            },
+        )
+        pumpQueue()
+    }
+
+    private fun epKey(ep: Episode) = ep.guid.ifBlank { ep.audioUrl + ep.index }
+
+    private fun enqueue(show: Show, episodes: List<Episode>, force: Boolean = false) {
+        val existing = _ui.value.queue.associateBy { it.key }
+        val add = episodes.mapNotNull { ep ->
+            val k = epKey(ep)
+            val old = existing[k]
+            if (old != null && old.status in setOf(DlStatus.queued, DlStatus.running, DlStatus.paused, DlStatus.done) && !force) {
+                null
+            } else {
+                QueueItem(k, show, ep, DlStatus.queued)
+            }
+        }
+        if (add.isEmpty()) {
+            _ui.value = _ui.value.copy(toast = "没有新的下载任务")
+            return
+        }
+        _ui.value = _ui.value.copy(
+            queue = _ui.value.queue.filterNot { q -> add.any { it.key == q.key } } + add,
+            downloadsPaused = false,
+            toast = "已加入 ${add.size} 集到下载队列",
+        )
+        downloader.paused = false
+        pumpQueue()
+    }
+
+    private fun pumpQueue() {
+        if (queueJob?.isActive == true) return
+        queueJob = viewModelScope.launch {
+            while (isActive) {
+                if (downloader.paused) {
+                    delay(300)
+                    continue
+                }
+                val next = _ui.value.queue.firstOrNull { it.status == DlStatus.queued } ?: break
+                patchQueue(next.key) { it.copy(status = DlStatus.running) }
                 try {
-                    val done = downloader.download(show, ep)
-                    if (done.downloaded) n++
-                    _ui.value = _ui.value.copy(
-                        episodes = _ui.value.episodes.map { if (it.guid == ep.guid) done else it },
-                    )
+                    val done = downloader.download(next.show, next.episode) { d, t ->
+                        patchQueue(next.key) { it.copy(bytesDone = d, bytesTotal = t, status = DlStatus.running) }
+                    }
+                    patchQueue(next.key) {
+                        it.copy(
+                            status = if (done.downloaded) DlStatus.done else DlStatus.skipped,
+                            episode = done,
+                        )
+                    }
+                    if (_ui.value.current?.key() == next.show.key()) {
+                        _ui.value = _ui.value.copy(
+                            episodes = _ui.value.episodes.map { if (epKey(it) == next.key) done else it },
+                        )
+                    }
+                } catch (e: Downloader.Paused) {
+                    patchQueue(next.key) { it.copy(status = DlStatus.paused) }
                 } catch (e: Exception) {
-                    _ui.value = _ui.value.copy(toast = e.message ?: "下载失败")
-                    break
+                    patchQueue(next.key) { it.copy(status = DlStatus.error, error = e.message.orEmpty()) }
                 }
             }
-            _ui.value = _ui.value.copy(toast = "新下 $n 集，其余已跳过")
         }
     }
 
-    fun play(ep: Episode) {
-        val show = _ui.value.current ?: return
-        val path = store.localStatus(show, ep).localPath
-        val uri = if (path.isNotBlank()) Uri.fromFile(java.io.File(path)) else Uri.parse(ep.audioUrl)
+    private fun patchQueue(key: String, fn: (QueueItem) -> QueueItem) {
+        _ui.value = _ui.value.copy(queue = _ui.value.queue.map { if (it.key == key) fn(it) else it })
+    }
+
+    fun retryFailed() {
+        _ui.value = _ui.value.copy(
+            queue = _ui.value.queue.map {
+                if (it.status == DlStatus.error) it.copy(status = DlStatus.queued, error = "") else it
+            },
+            downloadsPaused = false,
+        )
+        downloader.paused = false
+        pumpQueue()
+    }
+
+    fun play(ep: Episode, show: Show? = _ui.value.current) {
+        val s = show ?: return
+        val path = store.localStatus(s, ep).localPath.ifBlank { ep.localPath }
+        val uri = if (path.isNotBlank() && java.io.File(path).exists()) {
+            Uri.fromFile(java.io.File(path))
+        } else {
+            Uri.parse(ep.audioUrl)
+        }
         val app = getApplication<PodstashApp>()
         app.startForegroundService(Intent(app, PlaybackService::class.java))
-        val player = app.player
+        playListener?.let { player.removeListener(it) }
         val item = MediaItem.Builder()
             .setUri(uri)
-            .setMediaId(ep.guid.ifBlank { ep.audioUrl })
+            .setMediaId(epKey(ep))
             .setMediaMetadata(
                 MediaMetadata.Builder()
                     .setTitle(ep.title)
-                    .setArtist(show.name)
+                    .setArtist(s.name)
+                    .setArtworkUri(s.artwork.takeIf { it.isNotBlank() }?.let { Uri.parse(it) })
                     .build(),
             )
             .build()
@@ -196,22 +342,127 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         player.prepare()
         if (pos > 0) player.seekTo(pos)
         player.play()
-        player.addListener(object : Player.Listener {
+        val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (!isPlaying) store.setPosition(ep.guid, player.currentPosition)
+                persistPlayhead()
+                _ui.value = _ui.value.copy(playerPlaying = isPlaying)
             }
-        })
-        _ui.value = _ui.value.copy(playing = ep, playingShow = show)
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                persistPlayhead()
+            }
+        }
+        playListener = listener
+        player.addListener(listener)
+        val marked = store.localStatus(s, ep)
+        store.setLastPlayed(LastPlayed(ep.guid, s, marked, pos))
+        _ui.value = _ui.value.copy(
+            playing = marked,
+            playingShow = s,
+            playerPlaying = true,
+            playerPos = pos,
+        )
+    }
+
+    fun togglePlayPause() {
+        if (player.isPlaying) player.pause() else player.play()
+        persistPlayhead()
+        _ui.value = _ui.value.copy(playerPlaying = player.isPlaying)
+    }
+
+    fun seekTo(ms: Long) {
+        player.seekTo(ms.coerceAtLeast(0))
+        _ui.value = _ui.value.copy(playerPos = player.currentPosition)
+        persistPlayhead()
+    }
+
+    fun skipBy(ms: Long) {
+        seekTo(player.currentPosition + ms)
+    }
+
+    fun openPlayer(open: Boolean) {
+        _ui.value = _ui.value.copy(playerOpen = open)
+    }
+
+    fun continueLast() {
+        val lp = store.lastPlayed ?: return
+        play(lp.episode, lp.show)
+        _ui.value = _ui.value.copy(playerOpen = true)
     }
 
     fun setSpeed(v: Float) {
         store.setSpeed(v)
-        getApplication<PodstashApp>().player.let { it.playbackParameters = it.playbackParameters.withSpeed(v) }
+        player.playbackParameters = player.playbackParameters.withSpeed(v)
+        _ui.value = _ui.value.copy(toast = "倍速 ${v}x")
+    }
+
+    fun setSleepMinutes(m: Int) {
+        sleepJob?.cancel()
+        if (m <= 0) {
+            _ui.value = _ui.value.copy(sleepLeftMs = 0, toast = "已关闭睡眠定时")
+            return
+        }
+        val end = System.currentTimeMillis() + m * 60_000L
+        _ui.value = _ui.value.copy(sleepLeftMs = m * 60_000L, toast = "将在 $m 分钟后暂停")
+        sleepJob = viewModelScope.launch {
+            while (isActive) {
+                val left = end - System.currentTimeMillis()
+                if (left <= 0) {
+                    player.pause()
+                    persistPlayhead()
+                    _ui.value = _ui.value.copy(sleepLeftMs = 0, playerPlaying = false, toast = "睡眠定时：已暂停")
+                    break
+                }
+                _ui.value = _ui.value.copy(sleepLeftMs = left)
+                delay(1000)
+            }
+        }
     }
 
     fun setWifiOnly(v: Boolean) {
         store.setWifiOnly(v)
         _ui.value = _ui.value.copy(toast = if (v) "仅 Wi-Fi 下载" else "允许流量下载")
+    }
+
+    fun setTreeUri(uri: String) {
+        store.setTreeUri(uri)
+        _ui.value = _ui.value.copy(toast = "已选择导出文件夹，完成后会再复制一份到该目录")
+    }
+
+    fun importOpml(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                val text = withContext(Dispatchers.IO) {
+                    getApplication<Application>().contentResolver.openInputStream(uri)
+                        ?.bufferedReader()?.readText() ?: error("无法读取文件")
+                }
+                val shows = Opml.parse(text)
+                if (shows.isEmpty()) {
+                    _ui.value = _ui.value.copy(toast = "OPML 里没有有效的 feed")
+                    return@launch
+                }
+                shows.forEach { store.setSubscribed(it, true) }
+                _ui.value = _ui.value.copy(toast = "已导入 ${shows.size} 档关注（不会整档下载）", tab = 0)
+            } catch (e: Exception) {
+                _ui.value = _ui.value.copy(toast = e.message ?: "导入失败")
+            }
+        }
+    }
+
+    fun exportOpml(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                val xml = Opml.write(store.subscribed())
+                withContext(Dispatchers.IO) {
+                    getApplication<Application>().contentResolver.openOutputStream(uri)?.use {
+                        it.write(xml.toByteArray(Charsets.UTF_8))
+                    } ?: error("无法写入文件")
+                }
+                _ui.value = _ui.value.copy(toast = "已导出 ${store.subscribed().size} 档订阅")
+            } catch (e: Exception) {
+                _ui.value = _ui.value.copy(toast = e.message ?: "导出失败")
+            }
+        }
     }
 
     fun refreshSubscriptionsOnOpen() {
@@ -221,6 +472,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (subs.isEmpty()) return@launch
             _ui.value = _ui.value.copy(loading = "检查订阅新集…")
             var added = 0
+            val failures = mutableListOf<String>()
             for (show in subs) {
                 try {
                     val (fresh, eps) = withContext(Dispatchers.IO) { Catalog.fetchRss(show) }
@@ -235,21 +487,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             else -> marked.take(idx).filter { !it.downloaded }
                         }
                     }
-                    for (ep in news) {
-                        try {
-                            downloader.download(fresh, ep)
-                            added++
-                        } catch (_: Exception) {
-                        }
-                    }
+                    if (news.isNotEmpty()) enqueue(fresh.copy(subscribed = true), news)
+                    added += news.size
                     if (newest.isNotBlank()) store.setLastSeen(fresh.copy(subscribed = true), newest)
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    failures += "${show.name}：${e.message ?: "失败"}"
                 }
             }
-            _ui.value = _ui.value.copy(
-                loading = "",
-                toast = if (added > 0) "订阅更新：新下 $added 集" else "订阅已是最新",
-            )
+            val msg = buildString {
+                append(if (added > 0) "订阅：加入 $added 集新内容" else "订阅已是最新")
+                if (failures.isNotEmpty()) append("；失败 ${failures.size} 档")
+            }
+            _ui.value = _ui.value.copy(loading = "", toast = msg)
         }
     }
 
@@ -279,5 +528,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _ui.value = _ui.value.copy(updateBusy = "", toast = e.message ?: "更新失败")
             }
         }
+    }
+
+    private fun startTicker() {
+        tickerJob?.cancel()
+        tickerJob = viewModelScope.launch {
+            while (isActive) {
+                if (player.playbackState != Player.STATE_IDLE) {
+                    _ui.value = _ui.value.copy(
+                        playerPos = player.currentPosition,
+                        playerDur = player.duration.coerceAtLeast(0),
+                        playerPlaying = player.isPlaying,
+                    )
+                    if (player.isPlaying) persistPlayhead()
+                }
+                delay(500)
+            }
+        }
+    }
+
+    private fun persistPlayhead() {
+        val ep = _ui.value.playing ?: return
+        val show = _ui.value.playingShow ?: return
+        val pos = player.currentPosition
+        store.setPosition(ep.guid, pos)
+        store.setLastPlayed(LastPlayed(ep.guid, show, ep, pos))
+    }
+
+    override fun onCleared() {
+        persistPlayhead()
+        super.onCleared()
     }
 }

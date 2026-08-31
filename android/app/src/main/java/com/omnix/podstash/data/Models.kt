@@ -33,3 +33,22 @@ data class UpdateInfo(
     val apkUrl: String,
     val htmlUrl: String,
 )
+
+enum class DlStatus { queued, running, paused, done, skipped, error }
+
+data class QueueItem(
+    val key: String,
+    val show: Show,
+    val episode: Episode,
+    val status: DlStatus = DlStatus.queued,
+    val error: String = "",
+    val bytesDone: Long = 0,
+    val bytesTotal: Long = 0,
+)
+
+data class LastPlayed(
+    val guid: String,
+    val show: Show,
+    val episode: Episode,
+    val position: Long = 0,
+)
