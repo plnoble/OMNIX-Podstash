@@ -1,0 +1,52 @@
+name: Release Android APK
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build release APK
+        working-directory: android
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p dist
+          VER=$(tr -d '[:space:]' < VERSION)
+          find android/app/build/outputs/apk -name "*.apk" -print
+          find android/app/build/outputs/apk -name "*.apk" -exec cp {} "dist/OMNIX-Podstash-${VER}.apk" \;
+          ls -la dist
+          test -s "dist/OMNIX-Podstash-${VER}.apk"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.apk
+            version.json
+          generate_release_notes: true
+          body: |
+            OMNIX-Podstash Android. Install the APK, then the app checks this Release on launch.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,7 @@
+{
+  "version": "0.1.0",
+  "versionCode": 1,
+  "minSdk": 26,
+  "notes": "首发：搜索、下载、播放、已有跳过、关注后打开即下新集、GitHub 应用内更新。",
+  "repo": "plnoble/OMNIX-Podstash"
+}

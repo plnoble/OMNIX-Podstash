@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OMNIX-Podstash · 私人播客库</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <div class="brand">
+          <div class="logo">O</div>
+          <div>
+            <h1>OMNIX-Podstash</h1>
+            <p>私人播客库 · 搜、存、听都在你自己的设备上</p>
+          </div>
+        </div>
+        <div class="muted" id="appVersion">本地 · 127.0.0.1:8765</div>
+      </header>
+
+      <section class="card">
+        <div class="row" style="margin-bottom: 10px">
+          <div class="grow">
+            <input
+              id="searchInput"
+              type="text"
+              placeholder="搜索播客，例如：睡前故事 / NPR / 声东击西"
+              autocomplete="off"
+            />
+          </div>
+          <select id="country" style="width: 110px">
+            <option value="CN" selected>中国 CN</option>
+            <option value="US">美国 US</option>
+            <option value="TW">台湾 TW</option>
+            <option value="HK">香港 HK</option>
+            <option value="JP">日本 JP</option>
+            <option value="GB">英国 GB</option>
+          </select>
+          <button id="btnSearch" class="btn btn-primary">搜索</button>
+        </div>
+        <div class="row">
+          <div class="grow">
+            <input
+              id="sourceInput"
+              type="text"
+              placeholder="或粘贴：Apple / 小宇宙 / RSS / 有知有行 materials 链接"
+              autocomplete="off"
+            />
+          </div>
+          <button id="btnResolve" class="btn">解析加载</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="settings-grid">
+          <input id="outDir" type="text" placeholder="保存目录" />
+          <input
+            id="concurrency"
+            type="number"
+            min="1"
+            max="32"
+            value="32"
+            title="同时下载数（不是总集数上限）"
+          />
+          <button id="btnSaveSettings" class="btn">保存设置</button>
+        </div>
+        <div class="muted" style="margin-top: 8px">
+          默认目录 D:\Podcasts · 已有完整文件会自动跳过，不会重复下载
+        </div>
+      </section>
+
+      <section class="card" id="trendingSection">
+        <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+          <strong>热门节目</strong>
+          <div class="row" style="gap: 6px">
+            <button id="tabCn" class="btn tab active" data-src="cn">中文</button>
+            <button id="tabIntl" class="btn tab" data-src="apple">International</button>
+            <button id="btnRefreshTrend" class="btn btn-ghost">刷新</button>
+          </div>
+        </div>
+        <div id="trendingHint" class="muted" style="margin-bottom: 10px">
+          中文榜来自中文播客榜 · 国际榜来自 Apple Top · <b>点击节目</b>加载全集，可一键全部下载
+        </div>
+        <div id="trending" class="shows"></div>
+      </section>
+
+      <section id="showsSection" class="card hidden">
+        <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+          <strong>搜索结果</strong>
+          <span id="showsCount" class="muted"></span>
+        </div>
+        <div id="shows" class="shows"></div>
+      </section>
+
+      <section id="episodesSection" class="card hidden">
+        <div class="show-bar">
+          <img id="showArt" alt="" />
+          <div class="grow">
+            <h2 id="showName">—</h2>
+            <div id="showMeta" class="muted"></div>
+          </div>
+          <button id="btnDownloadAll" class="btn btn-primary" title="选中全部单集并开始下载">
+            下载全部
+          </button>
+          <button id="btnQuick10" class="btn" title="选中最新 10 集并开始下载">
+            一键下最新 10 集
+          </button>
+        </div>
+
+        <div class="toolbar">
+          <button id="btnAll" class="btn">全选</button>
+          <button id="btnUndownloaded" class="btn">只选未下载</button>
+          <button id="btnNone" class="btn">清空</button>
+          <button id="btnLatest10" class="btn">最新 10 集</button>
+          <button id="btnLatest30" class="btn">最新 30 集</button>
+          <button id="btnLatest100" class="btn">最新 100 集</button>
+          <input
+            id="filterInput"
+            type="text"
+            placeholder="过滤标题…"
+            style="width: 160px"
+          />
+          <div class="spacer"></div>
+          <span id="selectedCount" class="muted">已选 0</span>
+          <button id="btnDownload" class="btn btn-primary">批量下载</button>
+        </div>
+
+        <div id="epList" class="ep-list"></div>
+      </section>
+
+      <section id="progressSection" class="card progress-panel hidden">
+        <div class="job-head">
+          <div>
+            <strong id="jobTitle">下载任务</strong>
+            <div id="jobMeta" class="muted"></div>
+          </div>
+          <div class="row" style="gap: 8px">
+            <button id="btnRetryFailed" class="btn btn-primary hidden" title="只重试失败的单集，已下完的跳过">
+              重试失败
+            </button>
+            <button id="btnCancel" class="btn btn-danger">取消</button>
+          </div>
+        </div>
+        <div class="bar"><i id="jobBar"></i></div>
+        <div id="jobItems" class="job-items"></div>
+      </section>
+
+      <section class="card muted" style="font-size: 13px">
+        <strong style="color: var(--text)">数据从哪来</strong>
+        <p style="margin: 8px 0">
+          搜索走 Apple 公开目录 · 中文热门走
+          <a href="https://xyzrank.com/" target="_blank" rel="noopener">中文播客榜</a>
+          · 国际热门走 Apple Top · 单集列表和音频都从节目自己的公开 RSS 直链拉取，不经过任何中转站。
+        </p>
+        <p style="margin: 0">
+          也可把书签拖到收藏栏（在任意页提取 Apple 播客 ID 并打开本工具）：
+          <a id="bookmarklet" href="#">OMNIX 打开</a>
+        </p>
+      </section>
+    </div>
+
+    <div id="toast" class="toast"></div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
