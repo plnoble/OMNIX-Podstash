@@ -612,6 +612,8 @@ class Show:
     episode_count: int = 0
     country: str = ""
     rank: int = 0
+    subscribed: bool = False
+    last_seen_guid: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

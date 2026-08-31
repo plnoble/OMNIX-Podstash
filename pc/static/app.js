@@ -3,6 +3,7 @@
 const state = {
   shows: [],
   trending: [],
+  library: [],
   trendSource: "cn",
   show: null,
   episodes: [],
@@ -57,14 +58,36 @@ function fmtBytes(n) {
   return `${v.toFixed(i ? 1 : 0)} ${u[i]}`;
 }
 
-async function loadSettings() {
-  const s = await api("/api/settings");
+function fmtScanTime(ts) {
+  if (!ts) return "尚未扫描";
+  const d = new Date(Number(ts) * 1000);
+  if (Number.isNaN(d.getTime())) return "尚未扫描";
+  return d.toLocaleString();
+}
+
+function applySettings(s) {
   $("outDir").value = s.out_dir || "";
   $("concurrency").value = s.concurrency || 32;
+  $("autoScan").checked = !!s.auto_scan;
+  $("autoScanDays").value = String(s.auto_scan_days || 7);
+  $("autoScanLimit").value = String(s.auto_scan_limit ?? 30);
   const verEl = $("appVersion");
   if (verEl && s.version) {
-    verEl.textContent = `v${s.version} · 本地 · 127.0.0.1:8765`;
+    verEl.textContent = `v${s.version} · 本地`;
   }
+  const meta = [];
+  meta.push(`关注 ${s.subscribed_count || 0} 档`);
+  if (s.auto_scan) meta.push(`每 ${s.auto_scan_days || 7} 天自动扫描`);
+  else meta.push("定期扫描已关闭");
+  meta.push(`上次：${fmtScanTime(s.last_auto_scan)}`);
+  if (s.last_auto_scan_message) meta.push(s.last_auto_scan_message);
+  $("autoScanMeta").textContent = meta.join(" · ");
+}
+
+async function loadSettings() {
+  const s = await api("/api/settings");
+  applySettings(s);
+  await loadLibrary();
 }
 
 async function saveSettings() {
@@ -74,15 +97,102 @@ async function saveSettings() {
       body: JSON.stringify({
         out_dir: $("outDir").value.trim(),
         concurrency: Number($("concurrency").value || 32),
+        auto_scan: $("autoScan").checked,
+        auto_scan_days: Number($("autoScanDays").value || 7),
+        auto_scan_limit: Number($("autoScanLimit").value),
       }),
     });
-    $("outDir").value = s.out_dir;
-    $("concurrency").value = s.concurrency;
+    applySettings(s);
     toast("设置已保存");
     if (state.show) await scanExisting(true);
   } catch (e) {
     toast(e.message);
   }
+}
+
+async function loadLibrary() {
+  try {
+    const data = await api("/api/library");
+    state.library = data.shows || [];
+    renderLibrary();
+  } catch {
+    state.library = [];
+    renderLibrary();
+  }
+}
+
+function renderLibrary() {
+  const box = $("libraryShows");
+  const empty = $("libraryEmpty");
+  const list = state.library || [];
+  if (!list.length) {
+    box.innerHTML = "";
+    empty.style.display = "";
+    return;
+  }
+  empty.style.display = "none";
+  renderShowGrid(box, list, "library");
+}
+
+async function toggleSubscribe() {
+  if (!state.show) {
+    toast("请先加载一档节目");
+    return;
+  }
+  const next = !state.show.subscribed;
+  try {
+    await api("/api/subscribe", {
+      method: "POST",
+      body: JSON.stringify({
+        id: state.show.id || "",
+        name: state.show.name || "",
+        author: state.show.author || "",
+        artwork: state.show.artwork || "",
+        feed_url: state.show.feed_url || "",
+        episode_count: state.episodes.length,
+        subscribed: next,
+      }),
+    });
+    state.show.subscribed = next;
+    renderEpisodes();
+    await loadLibrary();
+    toast(next ? "已关注。定期扫描会补下未有的单集" : "已取消关注");
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+async function runAutoScanNow() {
+  const btn = $("btnAutoScanNow");
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.innerHTML = '<span class="spinner"></span> 扫描中';
+  try {
+    const data = await api("/api/auto-scan", { method: "POST", body: "{}" });
+    toast(data.message || "扫描完成");
+    await loadSettings();
+    if (state.show) await scanExisting(false);
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+async function importOpmlFile(file) {
+  const xml = await file.text();
+  const data = await api("/api/opml/import", {
+    method: "POST",
+    body: JSON.stringify({ xml }),
+  });
+  toast(`已导入 ${data.imported} 档关注`);
+  await loadLibrary();
+  await loadSettings();
+}
+
+function exportOpml() {
+  window.location.href = "/api/opml/export";
 }
 
 /* ---------- Trending ---------- */
@@ -184,7 +294,7 @@ function renderShowGrid(box, list, kind) {
   box.querySelectorAll(".show-card").forEach((el) => {
     el.addEventListener("click", async () => {
       const k = el.dataset.kind;
-      const listRef = k === "trend" ? state.trending : state.shows;
+      const listRef = k === "trend" ? state.trending : k === "library" ? state.library : state.shows;
       const s = listRef[Number(el.dataset.i)];
       box.querySelectorAll(".show-card").forEach((c) => c.classList.remove("active"));
       el.classList.add("active");
@@ -263,10 +373,16 @@ function renderEpisodes() {
     state.show.author,
     `${state.episodes.length} 集`,
     localN ? `本地已有 ${localN}` : "",
+    state.show.subscribed ? "已关注" : "",
     state.show.feed_url ? "可批量下载" : "",
   ]
     .filter(Boolean)
     .join(" · ");
+  const subBtn = $("btnSubscribe");
+  if (subBtn) {
+    subBtn.textContent = state.show.subscribed ? "已关注" : "关注";
+    subBtn.classList.toggle("btn-primary", !state.show.subscribed);
+  }
 
   const art = $("showArt");
   if (state.show.artwork) {
@@ -600,6 +716,23 @@ function bind() {
     if (e.key === "Enter") doResolve();
   });
   $("btnSaveSettings").addEventListener("click", saveSettings);
+  $("autoScan").addEventListener("change", saveSettings);
+  $("autoScanDays").addEventListener("change", saveSettings);
+  $("autoScanLimit").addEventListener("change", saveSettings);
+  $("btnAutoScanNow").addEventListener("click", runAutoScanNow);
+  $("btnSubscribe").addEventListener("click", toggleSubscribe);
+  $("btnImportOpml").addEventListener("click", () => $("opmlFile").click());
+  $("opmlFile").addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      await importOpmlFile(file);
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+  $("btnExportOpml").addEventListener("click", exportOpml);
   $("btnScanLibrary").addEventListener("click", () => scanExisting(true));
   $("btnScanShow").addEventListener("click", () => scanExisting(true));
   $("btnAll").addEventListener("click", selectAllVisible);

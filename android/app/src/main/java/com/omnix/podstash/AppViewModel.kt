@@ -21,6 +21,7 @@ import com.omnix.podstash.data.UpdateChecker
 import com.omnix.podstash.data.UpdateInfo
 import com.omnix.podstash.data.key
 import com.omnix.podstash.playback.PlaybackService
+import com.omnix.podstash.work.AutoScanScheduler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -70,6 +71,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val libraryPath: String get() = store.libraryPath()
     val pickedFolder: Boolean get() = store.treeUri.isNotBlank()
     val lastPlayed: LastPlayed? get() = store.lastPlayed
+    val autoScan: Boolean get() = store.autoScan
+    val autoScanDays: Int get() = store.autoScanDays
+    val autoScanLimit: Int get() = store.autoScanLimit
+    val lastAutoScanAt: Long get() = store.lastAutoScan
+    val lastAutoScanMessage: String get() = store.lastAutoScanMessage
 
     private var refreshJob: Job? = null
     private var queueJob: Job? = null
@@ -425,7 +431,43 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setWifiOnly(v: Boolean) {
         store.setWifiOnly(v)
+        AutoScanScheduler.ensure(getApplication())
         _ui.value = _ui.value.copy(toast = if (v) "仅 Wi-Fi 下载" else "允许流量下载")
+    }
+
+    fun setAutoScan(v: Boolean) {
+        store.setAutoScan(v)
+        AutoScanScheduler.ensure(getApplication())
+        _ui.value = _ui.value.copy(
+            toast = if (v) "已开启定期扫描：会按间隔检查关注的节目并下载未有的单集" else "已关闭定期扫描",
+        )
+    }
+
+    fun setAutoScanDays(days: Int) {
+        store.setAutoScanDays(days)
+        AutoScanScheduler.ensure(getApplication())
+        val label = when (days) {
+            1 -> "每天"
+            14 -> "每两周"
+            else -> "每周"
+        }
+        _ui.value = _ui.value.copy(toast = "扫描间隔：$label")
+    }
+
+    fun setAutoScanLimit(n: Int) {
+        store.setAutoScanLimit(n)
+        _ui.value = _ui.value.copy(
+            toast = if (n <= 0) "每档每次不限制集数" else "每档每次最多补 $n 集",
+        )
+    }
+
+    fun runAutoScanNow() {
+        if (store.subscribed().isEmpty()) {
+            _ui.value = _ui.value.copy(toast = "请先关注节目")
+            return
+        }
+        AutoScanScheduler.runOnce(getApplication())
+        _ui.value = _ui.value.copy(toast = "已在后台开始扫描，通知栏可看进度")
     }
 
     fun setTreeUri(uri: String) {

@@ -3,6 +3,7 @@ package com.omnix.podstash
 import android.app.Application
 import androidx.media3.exoplayer.ExoPlayer
 import com.omnix.podstash.data.Store
+import com.omnix.podstash.work.AutoScanScheduler
 
 class PodstashApp : Application() {
     lateinit var store: Store
@@ -14,5 +15,6 @@ class PodstashApp : Application() {
         super.onCreate()
         store = Store(this)
         player = ExoPlayer.Builder(this).build()
+        AutoScanScheduler.ensure(this)
     }
 }

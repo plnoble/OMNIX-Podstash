@@ -439,6 +439,28 @@ select:focus {
   gap: 10px;
 }
 
+.auto-scan-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 12px;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.check input {
+  width: auto;
+  accent-color: var(--accent);
+}
+
 @media (max-width: 720px) {
   .settings-grid {
     grid-template-columns: 1fr;

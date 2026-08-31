@@ -1,0 +1,51 @@
+version: "3.8"
+
+# OMNIX-Podstash · Docker（ARM / x86 均可）
+#
+# ARM 设备（飞牛 / 绿联 / 群晖 / 极空间 / 树莓派 64 位）：
+#   1. 把下面两个路径改成你机器上的目录
+#   2. 在该目录执行：docker compose up -d --build
+#      （本机 build，自动适配 ARM，不需要 x86 镜像）
+#
+# 已经能拉 GitHub 镜像时，可把 build 段删掉，只留 image。
+
+services:
+  podstash:
+    image: ghcr.io/plnoble/omnix-podstash:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omnix-podstash
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      TZ: Asia/Shanghai
+      PODSTASH_HOST: "0.0.0.0"
+      PODSTASH_PORT: "8765"
+      PODSTASH_OUT_DIR: /podcasts
+      PODSTASH_CONFIG: /config
+      PODSTASH_CONCURRENCY: "4"
+      PODSTASH_NO_BROWSER: "1"
+      # 第一次启动可打开定期扫描（之后以网页里的开关为准）：
+      # PODSTASH_AUTO_SCAN: "1"
+      # PODSTASH_AUTO_SCAN_DAYS: "7"
+      # PODSTASH_AUTO_SCAN_LIMIT: "30"
+    volumes:
+      # 默认写到当前目录 data/。若音频已在别的盘，改成绝对路径，例如：
+      # 群晖 /volume1/docker/podstash/podcasts
+      # 飞牛 /vol1/1000/docker/podstash/podcasts
+      - ./data/podcasts:/podcasts
+      - ./data/config:/config
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

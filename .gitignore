@@ -22,3 +22,6 @@ android/keystore/*.tmp
 
 .podbatch-index.json.tmp
 .omnix-index.json.tmp
+pc/state.json
+*.json.tmp
+/data/

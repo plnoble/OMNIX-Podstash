@@ -473,6 +473,51 @@ private fun SettingsPane(
             Switch(checked = vm.wifiOnly, onCheckedChange = vm::setWifiOnly)
         }
         Spacer(Modifier.height(20.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("定期自动扫描", color = TextC)
+                Text("按间隔检查已关注节目，补下还未下载的单集。已有文件会跳过。建议同时打开仅 Wi-Fi。", color = Muted, fontSize = 12.sp)
+            }
+            Switch(checked = vm.autoScan, onCheckedChange = vm::setAutoScan)
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(1 to "每天", 7 to "每周", 14 to "每两周").forEach { (d, label) ->
+                FilterChip(
+                    selected = vm.autoScanDays == d,
+                    onClick = { vm.setAutoScanDays(d) },
+                    label = { Text(label) },
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Soft, selectedLabelColor = Accent),
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(10, 30, 50, 0).forEach { n ->
+                FilterChip(
+                    selected = vm.autoScanLimit == n,
+                    onClick = { vm.setAutoScanLimit(n) },
+                    label = { Text(if (n == 0) "不限制" else "每次 $n 集") },
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Soft, selectedLabelColor = Accent),
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Button(onClick = { vm.runAutoScanNow() }, colors = ButtonDefaults.buttonColors(containerColor = Soft)) {
+            Text("立即扫描一次")
+        }
+        if (vm.lastAutoScanMessage.isNotBlank() || vm.lastAutoScanAt > 0) {
+            val whenTxt = if (vm.lastAutoScanAt > 0) {
+                java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+                    .format(java.util.Date(vm.lastAutoScanAt))
+            } else ""
+            Text(
+                listOf(whenTxt, vm.lastAutoScanMessage).filter { it.isNotBlank() }.joinToString(" · "),
+                color = Muted,
+                fontSize = 12.sp,
+            )
+        }
+        Spacer(Modifier.height(20.dp))
         Text("订阅 OPML", color = TextC, fontWeight = FontWeight.SemiBold)
         Text("从苹果播客、AntennaPod 等导入关注列表；导入后不会整档下载。", color = Muted, fontSize = 12.sp)
         Spacer(Modifier.height(8.dp))

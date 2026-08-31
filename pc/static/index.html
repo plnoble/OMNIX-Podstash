@@ -69,8 +69,42 @@
           </button>
         </div>
         <div class="muted" style="margin-top: 8px">
-          默认目录 D:\Podcasts · 打开节目或点「检测已有文件」会扫描该目录（含子文件夹）。文件名包含单集标题即可识别，例如「001 标题.mp3」「日期 标题.m4a」，标记后不会重复下载。
+          打开节目或点「检测已有文件」会扫描该目录。文件名包含单集标题即可识别，标记后不会重复下载。
         </div>
+        <div class="auto-scan-row">
+          <label class="check">
+            <input type="checkbox" id="autoScan" />
+            定期自动扫描关注的节目，下载还没有的单集
+          </label>
+          <select id="autoScanDays" title="扫描间隔" style="width: 110px">
+            <option value="1">每天</option>
+            <option value="7" selected>每周</option>
+            <option value="14">每两周</option>
+          </select>
+          <select id="autoScanLimit" title="每档每次最多补多少集" style="width: 190px">
+            <option value="10">每档每次最多 10 集</option>
+            <option value="30" selected>每档每次最多 30 集</option>
+            <option value="50">每档每次最多 50 集</option>
+            <option value="0">不限制（整档补齐）</option>
+          </select>
+          <button id="btnAutoScanNow" class="btn">立即扫描一次</button>
+        </div>
+        <div class="muted" id="autoScanMeta" style="margin-top: 8px"></div>
+      </section>
+
+      <section class="card" id="librarySection">
+        <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+          <strong>已关注</strong>
+          <div class="row" style="gap: 6px">
+            <button id="btnImportOpml" class="btn">导入 OPML</button>
+            <button id="btnExportOpml" class="btn">导出 OPML</button>
+            <input id="opmlFile" type="file" accept=".opml,.xml,text/xml" hidden />
+          </div>
+        </div>
+        <div id="libraryEmpty" class="muted" style="margin-bottom: 8px">
+          打开节目后点「关注」。定期扫描只处理已关注的节目。
+        </div>
+        <div id="libraryShows" class="shows"></div>
       </section>
 
       <section class="card" id="trendingSection">
@@ -103,6 +137,9 @@
             <h2 id="showName">—</h2>
             <div id="showMeta" class="muted"></div>
           </div>
+          <button id="btnSubscribe" class="btn" title="关注后才会进入定期自动扫描">
+            关注
+          </button>
           <button id="btnDownloadAll" class="btn btn-primary" title="选中全部单集并开始下载">
             下载全部
           </button>

@@ -1,0 +1,16 @@
+.git
+.github
+.gradle
+android
+mp
+**/__pycache__
+**/*.pyc
+**/.venv
+**/venv
+**/.idea
+**/*.apk
+**/*.iml
+.dockerignore
+Dockerfile
+docker-compose.yml
+开发计划.md

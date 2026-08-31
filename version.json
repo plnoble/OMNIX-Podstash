@@ -1,7 +1,7 @@
 {
-  "version": "0.2.1",
-  "versionCode": 4,
+  "version": "0.3.0",
+  "versionCode": 5,
   "minSdk": 26,
-  "notes": "检测下载目录里用其他工具下过的音频，并在节目列表标记为已下载。",
+  "notes": "定期自动扫描关注节目并下载未有单集（可开关）；提供 ARM 可用的 Docker Compose。",
   "repo": "plnoble/OMNIX-Podstash"
 }

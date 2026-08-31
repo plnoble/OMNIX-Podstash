@@ -27,6 +27,16 @@ class Store(context: Context) {
         private set
     var lastPlayed: LastPlayed? = null
         private set
+    var autoScan: Boolean = false
+        private set
+    var autoScanDays: Int = 7
+        private set
+    var autoScanLimit: Int = 30
+        private set
+    var lastAutoScan: Long = 0
+        private set
+    var lastAutoScanMessage: String = ""
+        private set
 
     init {
         load()
@@ -97,6 +107,35 @@ class Store(context: Context) {
     fun setSkippedVersion(code: Int) {
         lock.withLock {
             skippedVersionCode = code
+            persist()
+        }
+    }
+
+    fun setAutoScan(v: Boolean) {
+        lock.withLock {
+            autoScan = v
+            persist()
+        }
+    }
+
+    fun setAutoScanDays(days: Int) {
+        lock.withLock {
+            autoScanDays = days.coerceIn(1, 30)
+            persist()
+        }
+    }
+
+    fun setAutoScanLimit(n: Int) {
+        lock.withLock {
+            autoScanLimit = n.coerceAtLeast(0)
+            persist()
+        }
+    }
+
+    fun setLastAutoScan(message: String) {
+        lock.withLock {
+            lastAutoScan = System.currentTimeMillis()
+            lastAutoScanMessage = message
             persist()
         }
     }
@@ -265,6 +304,11 @@ class Store(context: Context) {
             speed = o.optDouble("speed", 1.0).toFloat()
             skippedVersionCode = o.optInt("skippedVersionCode", 0)
             treeUri = o.optString("treeUri")
+            autoScan = o.optBoolean("autoScan", false)
+            autoScanDays = o.optInt("autoScanDays", 7).coerceIn(1, 30)
+            autoScanLimit = o.optInt("autoScanLimit", 30).coerceAtLeast(0)
+            lastAutoScan = o.optLong("lastAutoScan", 0)
+            lastAutoScanMessage = o.optString("lastAutoScanMessage")
             o.optJSONObject("lastPlayed")?.let { lp ->
                 val sh = lp.optJSONObject("show") ?: return@let
                 val ep = lp.optJSONObject("episode") ?: return@let
@@ -367,6 +411,11 @@ class Store(context: Context) {
                 .put("wifiOnly", wifiOnly)
                 .put("skippedVersionCode", skippedVersionCode)
                 .put("treeUri", treeUri)
+                .put("autoScan", autoScan)
+                .put("autoScanDays", autoScanDays)
+                .put("autoScanLimit", autoScanLimit)
+                .put("lastAutoScan", lastAutoScan)
+                .put("lastAutoScanMessage", lastAutoScanMessage)
                 .put("lastPlayed", lp ?: JSONObject.NULL)
                 .toString(),
         )
