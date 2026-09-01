@@ -29,19 +29,12 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      # ghcr 是兜底发布渠道，先推它；ACR 出错不影响下面的 ghcr + tar
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Login to Aliyun ACR
-        if: env.ACR_USER != '' && env.ACR_PASS != ''
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.ACR_REGISTRY }}
-          username: ${{ env.ACR_USER }}
-          password: ${{ env.ACR_PASS }}
 
       - uses: docker/build-push-action@v6
         with:
@@ -52,19 +45,6 @@ jobs:
           tags: |
             ghcr.io/plnoble/omnix-podstash:${{ steps.ver.outputs.tag }}
             ghcr.io/plnoble/omnix-podstash:latest
-          provenance: false
-
-      - name: Build and push Aliyun ACR
-        if: env.ACR_USER != '' && env.ACR_PASS != ''
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ${{ env.ACR_REGISTRY }}/${{ env.ACR_IMAGE }}:${{ steps.ver.outputs.tag }}
-            ${{ env.ACR_REGISTRY }}/${{ env.ACR_IMAGE }}:latest
           provenance: false
 
       - name: Make package public
@@ -94,3 +74,25 @@ jobs:
           files: /tmp/omnix-podstash-${{ steps.ver.outputs.tag }}-linux-arm64.tar
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 阿里云 ACR（国内直连）放在最后：即便凭据有问题，上面的 ghcr + tar 也已发布
+      - name: Login to Aliyun ACR
+        if: env.ACR_USER != '' && env.ACR_PASS != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ env.ACR_USER }}
+          password: ${{ env.ACR_PASS }}
+
+      - name: Build and push Aliyun ACR
+        if: env.ACR_USER != '' && env.ACR_PASS != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.ACR_REGISTRY }}/${{ env.ACR_IMAGE }}:${{ steps.ver.outputs.tag }}
+            ${{ env.ACR_REGISTRY }}/${{ env.ACR_IMAGE }}:latest
+          provenance: false
