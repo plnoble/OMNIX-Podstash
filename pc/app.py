@@ -3,28 +3,36 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import logging
 import os
+import re
+import secrets
 import socket
+import sqlite3
 import sys
 import time
 import uuid
 import webbrowser
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import catalog
 import persist
+import store
 from core import (
     DownloadItem,
     DownloadJob,
@@ -54,9 +62,96 @@ _scan_task: asyncio.Task[None] | None = None
 _scan_pending = False
 
 
+def _persist_job(job: DownloadJob) -> None:
+    try:
+        store.save_job(
+            {
+                "id": job.id,
+                "show_name": job.show_name,
+                "out_dir": job.out_dir,
+                "status": job.status,
+                "message": job.message,
+            },
+            [i.to_dict() for i in job.items],
+        )
+    except Exception:
+        _log.exception("persist job failed")
+
+
+def _restore_jobs() -> None:
+    try:
+        out_dir = persist.get()["out_dir"]
+        for raw in store.load_jobs():
+            items = [
+                DownloadItem(
+                    episode=Episode(
+                        index=int(it.get("index") or 0),
+                        title=str(it.get("title") or "Untitled"),
+                        audio_url=str(it.get("audio_url") or ""),
+                        published="",
+                        duration="",
+                        guid=str(it.get("guid") or ""),
+                        size=int(it.get("size") or 0),
+                    ),
+                    path=str(it.get("path") or ""),
+                    status=str(it.get("status") or "pending"),
+                    bytes_done=int(it.get("bytes_done") or 0),
+                    bytes_total=int(it.get("bytes_total") or 0),
+                    error=str(it.get("error") or ""),
+                )
+                for it in raw.get("items") or []
+            ]
+            job = DownloadJob(
+                id=str(raw["id"]),
+                show_name=str(raw.get("show_name") or "Podcast"),
+                out_dir=str(raw.get("out_dir") or out_dir),
+                items=items,
+                status=str(raw.get("status") or "queued"),
+                message=str(raw.get("message") or ""),
+            )
+            if job.status in ("queued", "running"):
+                job.status = "cancelled"
+                job.message = "容器重启，任务中断；失败项可重试"
+                for it in job.items:
+                    if it.status == "running":
+                        it.status = "error"
+                        it.error = "容器重启中断"
+            _jobs[job.id] = job
+    except Exception:
+        _log.exception("restore jobs failed")
+
+
+async def _run_job_with_retries(
+    job: DownloadJob,
+    concurrency: int,
+    only_statuses: Optional[set[str]] = None,
+) -> None:
+    """Run a download job and automatically retry failed items (bounded)."""
+    await run_download_job(
+        job, concurrency=concurrency, only_statuses=only_statuses, max_attempts=3
+    )
+    _persist_job(job)
+    if job.status == "cancelled":
+        return
+    for _round in range(2):
+        failed = [i for i in job.items if i.status == "error"]
+        if not failed:
+            break
+        for i in failed:
+            i.status = "pending"
+            i.error = ""
+            i.bytes_done = 0
+            i.path = ""
+        await run_download_job(
+            job, concurrency=concurrency, only_statuses={"pending"}, max_attempts=4
+        )
+        _persist_job(job)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     persist.load()
+    _restore_jobs()
     global _scan_task
     _scan_task = asyncio.create_task(_auto_scan_loop())
     try:
@@ -72,6 +167,37 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="OMNIX-Podstash", version=app_version(), lifespan=lifespan)
 
+APP_PASSWORD = (os.environ.get("PODSTASH_PASSWORD") or "").strip()
+
+
+def _password_ok(authorization: Optional[str]) -> bool:
+    if not APP_PASSWORD:
+        return True
+    if not authorization:
+        return False
+    try:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "basic":
+            return False
+        raw = base64.b64decode(token.strip()).decode("utf-8", "replace")
+        _user, _sep, pw = raw.partition(":")
+        return secrets.compare_digest(pw.encode("utf-8"), APP_PASSWORD.encode("utf-8"))
+    except Exception:
+        return False
+
+
+@app.middleware("http")
+async def auth_middleware(request, call_next):
+    if request.url.path == "/api/health":
+        return await call_next(request)
+    if not _password_ok(request.headers.get("authorization")):
+        return JSONResponse(
+            {"detail": "需要登录"},
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="OMNIX-Podstash"'},
+        )
+    return await call_next(request)
+
 
 class ResolveBody(BaseModel):
     source: str = Field(..., description="Apple ID / show URL / RSS URL")
@@ -83,6 +209,7 @@ class DownloadBody(BaseModel):
     show_name: str
     out_dir: Optional[str] = None
     concurrency: Optional[int] = None
+    artwork: Optional[str] = None
     episodes: list[dict[str, Any]]
 
 
@@ -92,6 +219,7 @@ class SettingsBody(BaseModel):
     auto_scan: Optional[bool] = None
     auto_scan_days: Optional[int] = None
     auto_scan_limit: Optional[int] = None
+    auto_scan_mode: Optional[str] = None
 
 
 class LocalStatusBody(BaseModel):
@@ -114,6 +242,19 @@ class OpmlImportBody(BaseModel):
     xml: str
 
 
+class IgnoreBody(BaseModel):
+    guid: str
+    ignored: bool = True
+
+
+class ShowSettingsBody(BaseModel):
+    id: str = ""
+    name: str = ""
+    feed_url: str = ""
+    scan_days: Optional[int] = None
+    scan_limit: Optional[int] = None
+
+
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
     return {
@@ -126,6 +267,57 @@ async def health() -> dict[str, Any]:
         "episodes": "rss",
         "auto_scan": persist.get().get("auto_scan"),
     }
+
+
+_UPDATE_REPO = "plnoble/OMNIX-Podstash"
+_update_cache: dict[str, Any] = {"ts": 0.0, "data": None}
+
+
+def _ver_tuple(v: str) -> tuple[int, ...]:
+    nums = re.findall(r"\d+", str(v or ""))[:3]
+    return tuple(int(n) for n in nums) if nums else (0,)
+
+
+@app.get("/api/update")
+async def api_update() -> dict[str, Any]:
+    """Compare the running version with the latest GitHub Release (read-only, 1h cache)."""
+    now = time.monotonic()
+    if _update_cache["data"] and now - _update_cache["ts"] < 3600:
+        return _update_cache["data"]
+    current = app_version()
+    result: dict[str, Any] = {
+        "current": current,
+        "latest": current,
+        "has_update": False,
+        "notes": "",
+        "html_url": "",
+    }
+    try:
+        async with httpx.AsyncClient(
+            timeout=10.0,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "OMNIX-Podstash",
+            },
+            follow_redirects=True,
+        ) as client:
+            r = await client.get(
+                f"https://api.github.com/repos/{_UPDATE_REPO}/releases/latest"
+            )
+            r.raise_for_status()
+            data = r.json()
+        latest = str(data.get("tag_name") or "").lstrip("vV")
+        if latest:
+            result["latest"] = latest
+            result["has_update"] = _ver_tuple(latest) > _ver_tuple(current)
+            result["notes"] = str(data.get("body") or "")
+            result["html_url"] = str(data.get("html_url") or "")
+    except Exception:
+        # offline / rate-limited: report no update, never fail the page
+        pass
+    _update_cache["ts"] = now
+    _update_cache["data"] = result
+    return result
 
 
 def _out_dir() -> Path:
@@ -157,6 +349,9 @@ async def set_settings(body: SettingsBody) -> dict[str, Any]:
         patch["auto_scan_days"] = max(1, min(int(body.auto_scan_days), 30))
     if body.auto_scan_limit is not None:
         patch["auto_scan_limit"] = max(0, min(int(body.auto_scan_limit), 5000))
+    if body.auto_scan_mode is not None:
+        mode = str(body.auto_scan_mode).strip().lower()
+        patch["auto_scan_mode"] = mode if mode in {"new", "backfill"} else "new"
     if patch:
         persist.save(patch)
     return await get_settings()
@@ -184,6 +379,41 @@ async def api_subscribe(body: SubscribeBody) -> dict[str, Any]:
     return {"ok": True, "subscribed": body.subscribed, "shows": persist.subscribed(), "saved": rec}
 
 
+@app.post("/api/show-settings")
+async def api_show_settings(body: ShowSettingsBody) -> dict[str, Any]:
+    """Per-show overrides for scan frequency / per-scan episode cap."""
+    key = (body.id or body.feed_url or body.name or "").strip()
+    if not key:
+        raise HTTPException(400, "缺少节目标识")
+    show = store.get_show(key)
+    if not show:
+        raise HTTPException(404, "节目不在库里（先关注）")
+    if body.scan_days is not None:
+        show["scan_days"] = max(1, min(int(body.scan_days), 30))
+    if body.scan_limit is not None:
+        show["scan_limit"] = max(0, min(int(body.scan_limit), 5000))
+    store.upsert_show_record(show)
+    return {"ok": True, "show": show}
+
+
+@app.post("/api/episodes/ignore")
+async def api_ignore_episode(body: IgnoreBody) -> dict[str, Any]:
+    guid = (body.guid or "").strip()
+    if not guid:
+        raise HTTPException(400, "缺少 guid")
+    store.set_episode_ignored(guid, bool(body.ignored))
+    return {"ok": True, "guid": guid, "ignored": bool(body.ignored)}
+
+
+@app.get("/api/episodes/search")
+async def api_episode_search(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(30, ge=1, le=100),
+) -> dict[str, Any]:
+    results = store.search_episodes((q or "").strip(), limit)
+    return {"query": q, "results": results}
+
+
 @app.post("/api/opml/import")
 async def api_opml_import(body: OpmlImportBody) -> dict[str, Any]:
     shows = persist.parse_opml(body.xml)
@@ -198,6 +428,43 @@ async def api_opml_import(body: OpmlImportBody) -> dict[str, Any]:
 async def api_opml_export() -> PlainTextResponse:
     xml = persist.write_opml(persist.subscribed())
     return PlainTextResponse(xml, media_type="text/xml")
+
+
+@app.get("/api/backup")
+async def api_backup() -> StreamingResponse:
+    """Zip: a consistent snapshot of the SQLite db + subscriptions OPML + index files."""
+    buf = io.BytesIO()
+    snap_path = persist.db_path().with_name(f"{persist.db_path().name}.bak")
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Consistent SQLite snapshot via the backup API (safe under WAL).
+        try:
+            src = sqlite3.connect(str(persist.db_path()))
+            dst = sqlite3.connect(str(snap_path))
+            with dst:
+                src.backup(dst)
+            src.close()
+            dst.close()
+            zf.write(snap_path, "podstash.db")
+            snap_path.unlink(missing_ok=True)
+        except Exception:
+            _log.exception("db snapshot for backup failed")
+        zf.writestr("subscriptions.opml", persist.write_opml(persist.subscribed()))
+        out_dir = Path(persist.get()["out_dir"]).expanduser()
+        count = 0
+        for p in out_dir.rglob(".podbatch-index.json"):
+            if count >= 2000:
+                break
+            try:
+                zf.write(p, "indexes/" + p.relative_to(out_dir).as_posix())
+                count += 1
+            except OSError:
+                pass
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=omnix-podstash-backup.zip"},
+    )
 
 
 @app.post("/api/auto-scan")
@@ -298,6 +565,17 @@ async def api_resolve(body: ResolveBody) -> dict[str, Any]:
     if not show:
         raise HTTPException(502, "解析失败: unknown")
 
+    sid = (show.id or show.feed_url or show.name or "").strip()
+    if sid:
+        persist.save_episodes(sid, episodes)
+
+    ignored_guids: set[str] = set()
+    if sid:
+        try:
+            ignored_guids = {e["guid"] for e in store.list_episodes(sid) if e.get("ignored")}
+        except Exception:
+            pass
+
     out_path = _out_dir()
     local_done = 0
     ep_payload = []
@@ -306,10 +584,13 @@ async def api_resolve(body: ResolveBody) -> dict[str, Any]:
         for e, local in zip(episodes, local_rows):
             row = e.to_dict()
             row.update(local)
+            row["ignored"] = (e.guid or "") in ignored_guids
             ep_payload.append(row)
     else:
         for e in episodes:
-            ep_payload.append(e.to_dict())
+            row = e.to_dict()
+            row["ignored"] = (e.guid or "") in ignored_guids
+            ep_payload.append(row)
 
     show_d = show.to_dict()
     show_d["subscribed"] = persist.is_subscribed(show_d)
@@ -389,14 +670,16 @@ async def api_download(body: DownloadBody) -> dict[str, Any]:
         show_name=body.show_name or "Podcast",
         out_dir=str(out_path.resolve()),
         items=items,
+        artwork=body.artwork or "",
     )
     async with _jobs_lock:
         _jobs[job_id] = job
+    _persist_job(job)
 
     concurrency = body.concurrency or persist.get()["concurrency"]
 
     async def _run() -> None:
-        await run_download_job(job, concurrency=concurrency)
+        await _run_job_with_retries(job, concurrency)
 
     asyncio.create_task(_run())
     return {"job_id": job_id, "job": job.to_dict()}
@@ -419,6 +702,7 @@ async def api_cancel(job_id: str) -> dict[str, Any]:
         return job.to_dict()
     job.status = "cancelled"
     job.message = "已取消"
+    _persist_job(job)
     return job.to_dict()
 
 
@@ -444,14 +728,10 @@ async def api_retry_failed(job_id: str) -> dict[str, Any]:
         item.path = ""
 
     concurrency = int(persist.get().get("concurrency") or 32)
+    _persist_job(job)
 
     async def _run() -> None:
-        await run_download_job(
-            job,
-            concurrency=concurrency,
-            only_statuses={"pending"},
-            max_attempts=4,
-        )
+        await _run_job_with_retries(job, concurrency, only_statuses={"pending"})
 
     asyncio.create_task(_run())
     return {
@@ -476,28 +756,42 @@ def _show_source(show: dict[str, Any]) -> str:
     return str(show.get("feed_url") or show.get("id") or "").strip()
 
 
-async def run_auto_scan(*, reason: str = "schedule") -> dict[str, Any]:
-    """Fetch each subscribed show, skip files already on disk, download the rest."""
+def _show_scan_days(show: dict[str, Any], st: dict[str, Any]) -> int:
+    d = show.get("scan_days")
+    return max(1, int(d)) if d is not None else max(1, int(st.get("auto_scan_days") or 7))
+
+
+def _show_scan_limit(show: dict[str, Any], st: dict[str, Any]) -> int:
+    lim = show.get("scan_limit")
+    return int(lim) if lim is not None else int(st.get("auto_scan_limit") or 0)
+
+
+async def run_auto_scan(
+    *,
+    reason: str = "schedule",
+    shows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Fetch shows (all subscribed, or a due subset), skip existing, download the rest."""
     global _scan_pending
     if _scan_lock.locked():
         _scan_pending = False
         return {"ok": False, "message": "已有扫描任务在进行"}
     async with _scan_lock:
         _scan_pending = False
-        shows = persist.subscribed()
-        if not shows:
+        target_shows = shows if shows is not None else persist.subscribed()
+        if not target_shows:
             msg = "没有关注的节目。先关注或导入 OPML。"
             persist.save({"last_auto_scan": int(time.time()), "last_auto_scan_message": msg})
             return {"ok": False, "message": msg, "queued": 0}
         st = persist.get()
         out_path = Path(st["out_dir"]).expanduser()
-        limit = int(st.get("auto_scan_limit") or 0)
         concurrency = int(st.get("concurrency") or 8)
+        mode = str(st.get("auto_scan_mode") or "new")
         queued = 0
         skipped_existing = 0
         failures: list[str] = []
-        total = len(shows)
-        for i, show in enumerate(shows, start=1):
+        total = len(target_shows)
+        for i, show in enumerate(target_shows, start=1):
             label = str(show.get("name") or show.get("feed_url") or "?")
             persist.save({"last_auto_scan_message": f"正在扫描 {i}/{total}：{label}"})
             src = _show_source(show)
@@ -511,26 +805,56 @@ async def run_auto_scan(*, reason: str = "schedule") -> dict[str, Any]:
                 _log.warning("auto-scan resolve failed %s: %s", src, e)
                 continue
             name = resolved.name or str(show.get("name") or "Podcast")
+            sid = resolved.id or resolved.feed_url or name
+            persist.save_episodes(sid, episodes)
             rows, local_done = mark_episodes_local(out_path, name, episodes)
             skipped_existing += local_done
+
+            newest = episodes[0].guid if episodes else ""
+            prev_guid = str(show.get("last_seen_guid") or "")
+            candidates = list(zip(episodes, rows))
+            if mode == "new" and prev_guid:
+                cut = next(
+                    (
+                        j
+                        for j, (ep, _row) in enumerate(candidates)
+                        if (ep.guid or "").strip() and ep.guid.strip() == prev_guid
+                    ),
+                    None,
+                )
+                if cut is not None:
+                    candidates = candidates[:cut]
+
+            ignored: set[str] = set()
+            try:
+                ignored = {e["guid"] for e in store.list_episodes(sid) if e.get("ignored")}
+            except Exception:
+                pass
+
+            limit = _show_scan_limit(show, st)
             pending = [
                 ep
-                for ep, row in zip(episodes, rows)
-                if not row.get("downloaded") and ep.audio_url
+                for ep, row in candidates
+                if not row.get("downloaded")
+                and ep.audio_url
+                and (ep.guid or "") not in ignored
             ]
             if limit > 0:
                 pending = pending[:limit]
-            newest = episodes[0].guid if episodes else ""
+
             persist.upsert_show(
                 {
                     **show,
-                    "id": resolved.id or show.get("id") or "",
+                    "id": sid,
                     "name": name,
                     "author": resolved.author or show.get("author") or "",
                     "artwork": resolved.artwork or show.get("artwork") or "",
                     "feed_url": resolved.feed_url or show.get("feed_url") or src,
                     "episode_count": len(episodes),
                     "last_seen_guid": newest,
+                    "last_scan_ts": int(time.time()),
+                    "scan_days": show.get("scan_days"),
+                    "scan_limit": show.get("scan_limit"),
                 },
                 subscribed=True,
             )
@@ -542,12 +866,13 @@ async def run_auto_scan(*, reason: str = "schedule") -> dict[str, Any]:
                 show_name=name,
                 out_dir=str(out_path.resolve()),
                 items=[DownloadItem(episode=ep) for ep in pending],
+                artwork=resolved.artwork or show.get("artwork") or "",
             )
             async with _jobs_lock:
                 _jobs[job_id] = job
-            await run_download_job(job, concurrency=concurrency)
+            await _run_job_with_retries(job, concurrency)
             queued += sum(1 for i in job.items if i.status in ("done", "skipped", "error"))
-        parts = [f"扫描{len(shows)}档"]
+        parts = [f"扫描{len(target_shows)}档"]
         if queued:
             parts.append(f"处理 {queued} 集")
         if skipped_existing:
@@ -575,10 +900,15 @@ async def _auto_scan_loop() -> None:
         try:
             st = persist.get()
             if st.get("auto_scan"):
-                last = int(st.get("last_auto_scan") or 0)
-                days = max(1, int(st.get("auto_scan_days") or 7))
-                if time.time() - last >= days * 86400:
-                    await run_auto_scan(reason="schedule")
+                now = time.time()
+                due = [
+                    s
+                    for s in persist.subscribed()
+                    if now - int(s.get("last_scan_ts") or 0)
+                    >= _show_scan_days(s, st) * 86400
+                ]
+                if due:
+                    await run_auto_scan(reason="schedule", shows=due)
         except asyncio.CancelledError:
             raise
         except Exception:

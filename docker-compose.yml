@@ -1,16 +1,19 @@
 version: "2"
 
-# 极空间 T2S：不要让它去拉 ghcr.io（国内失败 + 包默认私有）。
-# 正确顺序：
-#   1. 从 GitHub Release 下载 omnix-podstash-0.3.1-linux-arm64.tar
-#   2. 上传到极空间任意文件夹
-#   3. Docker → 镜像 → 本地镜像 → 导入
-#   4. 再粘贴本 YAML 创建项目
+# 镜像发布在阿里云 ACR（国内直连、公开匿名可拉），地址：
+#   registry.cn-hangzhou.aliyuncs.com/omnix/omnix-podstash
+#
+# 更新（推荐）：
+#   docker compose pull && docker compose up -d
+# 或极空间 Docker → 项目 → 更新 / 重新创建；也可挂 watchtower 全自动。
+#
+# 兜底（拉不到镜像时）：从 GitHub Release 下载 omnix-podstash-*-linux-arm64.tar，
+# 极空间 Docker → 镜像 → 本地镜像 → 导入，再把下面 image 改成 omnix-podstash:<版本>。
 # volumes 用界面「查询路径」复制出来的目录，并先建好 podcasts、config 两个空文件夹。
 
 services:
   podstash:
-    image: omnix-podstash:0.3.1
+    image: registry.cn-hangzhou.aliyuncs.com/omnix/omnix-podstash:latest
     container_name: omnix-podstash
     restart: always
     dns:
@@ -26,6 +29,11 @@ services:
       - PODSTASH_CONFIG=/config
       - PODSTASH_CONCURRENCY=4
       - PODSTASH_NO_BROWSER=1
+      # 文件属主（非 root），按需改；首次启用会对 /podcasts 做一次递归 chown
+      - PUID=1000
+      - PGID=1000
+      # 设置后整个界面需要登录（Basic Auth），/api/health 除外
+      # - PODSTASH_PASSWORD=改成你的密码
       - PODSTASH_LIBRARY_LABEL=/tmp/zfsv3/nvme11/13906165220/data/播客
     volumes:
       - "/tmp/zfsv3/nvme11/13906165220/data/播客:/podcasts"

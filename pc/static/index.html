@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OMNIX-Podstash · 私人播客库</title>
-    <link rel="stylesheet" href="/static/style.css?v=0.3.1" />
+    <link rel="stylesheet" href="/static/style.css?v=0.3.3" />
   </head>
   <body>
     <div class="app">
@@ -18,6 +18,12 @@
         </div>
         <div class="muted" id="appVersion">本地</div>
       </header>
+
+      <div id="updateBanner" class="update-banner hidden">
+        <span id="updateBannerText"></span>
+        <a id="updateBannerLink" href="#" target="_blank" rel="noopener">查看 Release</a>
+        <button id="btnDismissUpdate" class="btn btn-ghost">关闭</button>
+      </div>
 
       <section class="card onboard" id="onboard">
         <strong>第一次用，按这三步</strong>
@@ -101,6 +107,10 @@
               <option value="50">每档每次最多 50 集</option>
               <option value="0">不限制（整档补齐）</option>
             </select>
+            <select id="autoScanMode" title="扫描下载策略" style="width: 170px">
+              <option value="new" selected>只下新集（推荐）</option>
+              <option value="backfill">补齐所有缺失</option>
+            </select>
             <button id="btnAutoScanNow" class="btn">立即扫描一次</button>
           </div>
           <div class="muted" id="autoScanMeta" style="margin-top: 8px"></div>
@@ -120,6 +130,23 @@
           还没有关注。上面搜索一个节目点开，再点「关注」。也可以导入 OPML。
         </div>
         <div id="libraryShows" class="shows"></div>
+      </section>
+
+      <section class="card" id="contentSearchSection">
+        <div class="row" style="margin-bottom: 10px">
+          <div class="grow">
+            <input
+              id="contentSearchInput"
+              type="text"
+              placeholder="搜索单集内容（标题 / shownotes）"
+              autocomplete="off"
+            />
+          </div>
+          <button id="btnContentSearch" class="btn btn-primary">搜索内容</button>
+        </div>
+        <div id="contentSearchResults" class="muted">
+          在已加载过或扫描过的节目里搜索标题和简介（shownotes）。
+        </div>
       </section>
 
       <section class="card" id="trendingSection">
@@ -161,6 +188,25 @@
           <button id="btnQuick10" class="btn" title="选中最新 10 集并开始下载">
             一键下最新 10 集
           </button>
+        </div>
+
+        <div class="row per-show-settings" id="perShowSettings">
+          <span class="muted">本档扫描：</span>
+          <select id="perShowScanDays" title="本档扫描间隔（空 = 用全局）" style="width: 130px">
+            <option value="">跟随全局</option>
+            <option value="1">每天</option>
+            <option value="7">每周</option>
+            <option value="14">每两周</option>
+            <option value="30">每月</option>
+          </select>
+          <select id="perShowScanLimit" title="本档每轮最多下几集（0 = 不限制）" style="width: 160px">
+            <option value="">跟随全局</option>
+            <option value="10">每轮最多 10 集</option>
+            <option value="30">每轮最多 30 集</option>
+            <option value="50">每轮最多 50 集</option>
+            <option value="0">不限制</option>
+          </select>
+          <button id="btnPerShowSave" class="btn btn-mini">保存本档设置</button>
         </div>
 
         <div id="workBanner" class="work-banner hidden">
@@ -225,6 +271,6 @@
     </div>
 
     <div id="toast" class="toast"></div>
-    <script src="/static/app.js?v=0.3.1"></script>
+    <script src="/static/app.js?v=0.3.3"></script>
   </body>
 </html>

@@ -628,6 +628,7 @@ class Episode:
     duration: str = ""
     guid: str = ""
     size: int = 0
+    description: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -662,6 +663,7 @@ class DownloadJob:
     items: list[DownloadItem] = field(default_factory=list)
     status: str = "queued"  # queued|running|done|error|cancelled
     message: str = ""
+    artwork: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         done = sum(1 for i in self.items if i.status in ("done", "skipped"))
@@ -826,6 +828,12 @@ def parse_feed_bytes(content: bytes, source_url: str = "") -> tuple[str, list[Ep
         if not audio_url:
             continue
 
+        etype = str(
+            entry.get("itunes_episodetype") or entry.get("episode_type") or ""
+        ).strip().lower()
+        if etype in {"trailer", "bonus"}:
+            continue
+
         published = ""
         if entry.get("published_parsed"):
             published = parse_date(entry.published_parsed)
@@ -837,6 +845,19 @@ def parse_feed_bytes(content: bytes, source_url: str = "") -> tuple[str, list[Ep
         title = (entry.get("title") or "Untitled").strip()
         guid = str(entry.get("id") or entry.get("guid") or audio_url)
 
+        # Shownotes: prefer <content:encoded>, then <description>/<itunes:summary>/subtitle.
+        shownotes = ""
+        content = entry.get("content")
+        if isinstance(content, list) and content and isinstance(content[0], dict):
+            shownotes = str(content[0].get("value") or "")
+        if not shownotes:
+            shownotes = str(
+                entry.get("summary")
+                or entry.get("itunes_summary")
+                or entry.get("subtitle")
+                or ""
+            ).strip()
+
         episodes.append(
             Episode(
                 index=0,
@@ -846,6 +867,7 @@ def parse_feed_bytes(content: bytes, source_url: str = "") -> tuple[str, list[Ep
                 duration=_duration_str(entry),
                 guid=guid,
                 size=size,
+                description=shownotes,
             )
         )
 
@@ -888,6 +910,7 @@ def _et_fallback(content: bytes) -> list[Episode]:
         title = (item.findtext("title") or "Untitled").strip()
         pub = parse_date(item.findtext("pubDate") or "")
         guid = (item.findtext("guid") or url).strip()
+        shownotes = (item.findtext("description") or "").strip()
         try:
             size = int(enc.get("length") or 0)
         except ValueError:
@@ -900,23 +923,43 @@ def _et_fallback(content: bytes) -> list[Episode]:
                 published=pub,
                 guid=guid,
                 size=size,
+                description=shownotes,
             )
         )
     return eps
+
+
+_feed_cache: dict[str, tuple[str, str, bytes]] = {}
 
 
 async def fetch_episodes(feed_url: str) -> tuple[str, list[Episode]]:
     feed_url = (feed_url or "").strip()
     if not feed_url:
         raise ValueError("缺少 feed URL")
+    cached = _feed_cache.get(feed_url)
     last_err: Exception | None = None
     content = b""
     for attempt in range(3):
         try:
+            headers: dict[str, str] = {}
+            if cached:
+                etag, lastmod, _prev = cached
+                if etag:
+                    headers["If-None-Match"] = etag
+                if lastmod:
+                    headers["If-Modified-Since"] = lastmod
             async with _client(timeout=httpx.Timeout(90.0, connect=30.0)) as client:
-                r = await client.get(feed_url)
+                r = await client.get(feed_url, headers=headers)
+                if r.status_code == 304 and cached:
+                    content = cached[2]
+                    break
                 r.raise_for_status()
                 content = r.content
+                _feed_cache[feed_url] = (
+                    r.headers.get("etag") or "",
+                    r.headers.get("last-modified") or "",
+                    content,
+                )
             break
         except Exception as e:
             last_err = e
@@ -1364,7 +1407,79 @@ def build_dest_path(out_dir: Path, show_name: str, ep: Episode) -> Path:
     if not base:
         base = sanitize_filename(ep.published or ep.guid or "episode", max_len=80)
     ext = guess_ext(ep.audio_url)
-    return folder / f"{base}{ext}"
+    num = f"{max(0, ep.index) + 1:03d} "
+    return folder / f"{num}{base}{ext}"
+
+
+def _cover_mime(cover: bytes) -> str:
+    return "image/png" if cover[:8] == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
+
+
+def write_media_tags(
+    path: Path,
+    *,
+    title: str,
+    artist: str,
+    album: str,
+    track: int,
+    cover: bytes | None = None,
+) -> None:
+    """Best-effort ID3/MP4 tags so NAS players show cover, title and show name."""
+    if not path.exists():
+        return
+    try:
+        from mutagen.id3 import APIC, ID3, TALB, TIT2, TPE1, TRCK
+        from mutagen.mp4 import MP4, MP4Cover
+    except Exception:
+        return
+    ext = path.suffix.lower()
+    try:
+        if ext == ".mp3":
+            audio = ID3()
+            audio.add(TIT2(encoding=3, text=title))
+            audio.add(TPE1(encoding=3, text=artist))
+            audio.add(TALB(encoding=3, text=album))
+            audio.add(TRCK(encoding=3, text=str(track)))
+            if cover:
+                audio.add(
+                    APIC(
+                        encoding=3,
+                        mime=_cover_mime(cover),
+                        type=3,
+                        desc="Cover",
+                        data=cover,
+                    )
+                )
+            audio.save(path)
+        elif ext in (".m4a", ".mp4"):
+            tags = MP4(path)
+            tags["\xa9nam"] = title
+            tags["\xa9ART"] = artist
+            tags["\xa9alb"] = album
+            tags["trkn"] = [(track, 0)]
+            if cover:
+                fmt = (
+                    MP4Cover.FORMAT_PNG
+                    if _cover_mime(cover) == "image/png"
+                    else MP4Cover.FORMAT_JPEG
+                )
+                tags["covr"] = [MP4Cover(cover, imageformat=fmt)]
+            tags.save()
+    except Exception:
+        pass
+
+
+async def fetch_cover(client: httpx.AsyncClient, url: str) -> bytes | None:
+    url = (url or "").strip()
+    if not url.startswith("http"):
+        return None
+    try:
+        r = await client.get(url)
+        if r.status_code == 200 and r.content:
+            return r.content
+    except Exception:
+        pass
+    return None
 
 
 async def run_download_job(
@@ -1410,6 +1525,8 @@ async def run_download_job(
         limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
     ) as client:
 
+        cover = await fetch_cover(client, job.artwork)
+
         async def worker(item: DownloadItem) -> None:
             async with sem:
                 if job.status == "cancelled":
@@ -1444,6 +1561,14 @@ async def run_download_job(
                     # dest suffix may have changed after Content-Type sniff
                     final = Path(item.path) if item.path else dest
                     remember_local_file(folder, item.episode, final)
+                    write_media_tags(
+                        final,
+                        title=item.episode.title,
+                        artist=job.show_name,
+                        album=job.show_name,
+                        track=max(0, item.episode.index) + 1,
+                        cover=cover,
+                    )
 
         if targets:
             await asyncio.gather(*(worker(i) for i in targets))

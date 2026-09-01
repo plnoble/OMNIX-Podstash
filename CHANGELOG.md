@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+Docker / 服务端主线：
+
+- 更新：镜像发布到阿里云 ACR（国内直连、公开匿名拉取），`docker compose pull && docker compose up -d` 一键更新；网页顶部有新版本提示
+- 数据层：`state.json` 升级为 SQLite（旧配置自动迁移），下载队列重启不丢、可恢复重试
+- 镜像：`HEALTHCHECK`、非 root 运行（`PUID`/`PGID`）、`PODSTASH_PASSWORD` 单密码登录
+- RSS 条件请求缓存（ETag / Last-Modified）；`GET /api/backup` 一键备份
+- shownotes 存储与展示；单集内容全文搜索
+- 下载写入 ID3/MP4 标签（封面/标题/节目名/集数）+ 文件名加集数编号
+- 新增「只下新集 / 补齐缺失」开关；过滤 trailer / bonus 单集；单集「忽略」
+- 每档独立扫描设置（间隔 / 每轮上限）；失败自动重试
+
+Android：本版无改动（`versionCode` 保持 6，不弹更新）。
+
 ## 0.3.2
 
 - Android：点开节目先进入页面再拉列表、再检测本地；「检测已有」有进度提示

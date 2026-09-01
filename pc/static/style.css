@@ -285,6 +285,13 @@ select:focus {
   font-size: 18px;
 }
 
+.per-show-settings {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -363,6 +370,91 @@ select:focus {
 
 .ep-item.downloaded .title {
   color: var(--muted);
+}
+
+.ep-main {
+  cursor: pointer;
+  min-width: 0;
+}
+
+.ep-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.ep-desc {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 72px;
+  overflow: hidden;
+}
+
+.ep-desc.open {
+  max-height: none;
+  overflow: visible;
+}
+
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.linklike:hover {
+  text-decoration: underline;
+}
+
+.btn-mini {
+  padding: 3px 9px;
+  font-size: 11px;
+  border-radius: 8px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.btn-mini:hover {
+  color: var(--text);
+  border-color: #3d4760;
+}
+
+.btn-mini.is-ignored {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+}
+
+.search-hit {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-top: 10px;
+  background: #12151c;
+}
+
+.search-hit-title {
+  font-size: 14px;
+}
+
+.search-hit-info {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.search-hit-snippet {
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.75;
+  line-height: 1.5;
 }
 
 .progress-panel {
@@ -485,6 +577,24 @@ select:focus {
 
 .onboard li {
   margin: 4px 0;
+}
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warn) 12%, var(--bg-elevated));
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  color: var(--text);
+  font-size: 13px;
+}
+
+.update-banner .btn {
+  padding: 6px 10px;
+  font-size: 12px;
 }
 
 .work-banner {

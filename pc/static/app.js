@@ -77,6 +77,7 @@ function applySettings(s) {
   $("autoScan").checked = !!s.auto_scan;
   $("autoScanDays").value = String(s.auto_scan_days || 7);
   $("autoScanLimit").value = String(s.auto_scan_limit ?? 30);
+  if ($("autoScanMode")) $("autoScanMode").value = s.auto_scan_mode || "new";
   state.libraryLabel = s.library_label || "";
   const verEl = $("appVersion");
   if (verEl && s.version) {
@@ -128,6 +129,28 @@ async function loadSettings() {
   await loadLibrary();
 }
 
+async function checkUpdate() {
+  try {
+    const u = await api("/api/update");
+    if (!u || !u.has_update) return;
+    const banner = $("updateBanner");
+    if (!banner) return;
+    $("updateBannerText").textContent =
+      `有新版本 v${u.latest}（当前 v${u.current}）。在 NAS 上执行：` +
+      `docker compose pull && docker compose up -d`;
+    const link = $("updateBannerLink");
+    if (u.html_url) {
+      link.href = u.html_url;
+      link.style.display = "";
+    } else {
+      link.style.display = "none";
+    }
+    banner.classList.remove("hidden");
+  } catch {
+    /* ignore update-check failures */
+  }
+}
+
 async function saveSettings() {
   try {
     const s = await api("/api/settings", {
@@ -138,6 +161,7 @@ async function saveSettings() {
         auto_scan: $("autoScan").checked,
         auto_scan_days: Number($("autoScanDays").value || 7),
         auto_scan_limit: Number($("autoScanLimit").value),
+        auto_scan_mode: $("autoScanMode") ? $("autoScanMode").value : "new",
       }),
     });
     applySettings(s);
@@ -195,6 +219,46 @@ async function toggleSubscribe() {
     renderEpisodes();
     await loadLibrary();
     toast(next ? "已关注。定期扫描会补下未有的单集" : "已取消关注");
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+function syncPerShowSettings() {
+  if (!state.show) return;
+  const key = state.show.id || state.show.feed_url || state.show.name || "";
+  const lib = (state.library || []).find(
+    (s) => (s.id || s.feed_url || s.name || "") === key
+  );
+  if ($("perShowScanDays")) {
+    $("perShowScanDays").value = lib && lib.scan_days != null ? String(lib.scan_days) : "";
+  }
+  if ($("perShowScanLimit")) {
+    $("perShowScanLimit").value =
+      lib && lib.scan_limit != null ? String(lib.scan_limit) : "";
+  }
+}
+
+async function savePerShowSettings() {
+  if (!state.show) return;
+  const daysEl = $("perShowScanDays");
+  const limitEl = $("perShowScanLimit");
+  const days = daysEl.value === "" ? null : Number(daysEl.value);
+  const limit = limitEl.value === "" ? null : Number(limitEl.value);
+  try {
+    await api("/api/show-settings", {
+      method: "POST",
+      body: JSON.stringify({
+        id: state.show.id || "",
+        name: state.show.name || "",
+        feed_url: state.show.feed_url || "",
+        scan_days: days,
+        scan_limit: limit,
+      }),
+    });
+    await loadLibrary();
+    syncPerShowSettings();
+    toast("已保存本档扫描设置");
   } catch (e) {
     toast(e.message);
   }
@@ -493,17 +557,38 @@ function renderEpisodes() {
         let badge = `<span class="badge">#${e.index}</span>`;
         if (e.downloaded) badge = `<span class="badge badge-ok">已下载</span>`;
         else if (e.partial) badge = `<span class="badge badge-warn">未下完</span>`;
+        const descText = htmlToText(e.description || "");
+        let descHtml = "";
+        if (descText) {
+          const short = descText.length > 220;
+          descHtml = `<div class="ep-desc">${escapeHtml(
+            short ? descText.slice(0, 220) : descText
+          )}${
+            short
+              ? ` <button class="linklike ep-desc-toggle" data-full="${escapeAttr(descText)}">展开</button>`
+              : ""
+          }</div>`;
+        }
+        const ignBtn = e.guid
+          ? `<button class="btn btn-mini${e.ignored ? " is-ignored" : ""}" data-ignore="${escapeAttr(
+              e.guid
+            )}">${e.ignored ? "取消忽略" : "忽略"}</button>`
+          : "";
         return `
-          <label class="${rowClass}">
-            <input type="checkbox" data-index="${e.index}" ${checked} />
-            <div>
+          <div class="${rowClass}">
+            <input type="checkbox" id="epcb${e.index}" data-index="${e.index}" ${checked} />
+            <label class="ep-main" for="epcb${e.index}">
               <div class="title">${escapeHtml(e.title)}</div>
               <div class="info">${escapeHtml(e.published || "日期未知")}${
                 e.duration ? " · " + escapeHtml(e.duration) : ""
               }${size ? " · " + size : ""}</div>
+              ${descHtml}
+            </label>
+            <div class="ep-side">
+              ${badge}
+              ${ignBtn}
             </div>
-            ${badge}
-          </label>`;
+          </div>`;
       })
       .join("");
     if (!box._bound) {
@@ -515,6 +600,34 @@ function renderEpisodes() {
         else state.selected.delete(idx);
         updateSelectedCount();
       });
+      box.addEventListener("click", (ev) => {
+        const toggle = ev.target.closest(".ep-desc-toggle");
+        if (toggle) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const full = toggle.dataset.full || "";
+          const parent = toggle.parentElement;
+          if (toggle.textContent.trim() === "展开") {
+            parent.classList.add("open");
+            parent.innerHTML =
+              escapeHtml(full) +
+              ` <button class="linklike ep-desc-toggle" data-full="${escapeAttr(full)}">收起</button>`;
+          } else {
+            parent.classList.remove("open");
+            parent.innerHTML =
+              escapeHtml(full.slice(0, 220)) +
+              ` <button class="linklike ep-desc-toggle" data-full="${escapeAttr(full)}">展开</button>`;
+          }
+          return;
+        }
+        const ign = ev.target.closest("[data-ignore]");
+        if (ign) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          toggleIgnore(ign.dataset.ignore);
+          return;
+        }
+      });
       box._bound = true;
     }
   }
@@ -524,6 +637,7 @@ function renderEpisodes() {
     more.classList.toggle("hidden", left <= 0);
     more.textContent = left > 0 ? `显示更多（还有 ${left} 集）` : "显示更多";
   }
+  syncPerShowSettings();
   updateSelectedCount();
 }
 
@@ -622,6 +736,7 @@ async function startDownload() {
         show_name: state.show.name,
         out_dir: $("outDir").value.trim() || undefined,
         concurrency: Number($("concurrency").value || 32),
+        artwork: state.show.artwork || "",
         episodes: eps,
       }),
     });
@@ -777,6 +892,65 @@ function escapeAttr(s) {
   return escapeHtml(s).replace(/'/g, "&#39;");
 }
 
+function htmlToText(html) {
+  if (!html) return "";
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  return (div.textContent || "").replace(/\s+/g, " ").trim();
+}
+
+async function toggleIgnore(guid) {
+  if (!guid) return;
+  const ep = state.episodes.find((e) => (e.guid || "") === guid);
+  if (!ep) return;
+  const next = !ep.ignored;
+  try {
+    await api("/api/episodes/ignore", {
+      method: "POST",
+      body: JSON.stringify({ guid, ignored: next }),
+    });
+    ep.ignored = next;
+    renderEpisodes();
+    toast(next ? "已忽略，扫描不会再下这一集" : "已取消忽略");
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+async function doContentSearch() {
+  const q = $("contentSearchInput").value.trim();
+  const box = $("contentSearchResults");
+  if (!q) {
+    toast("请输入关键词");
+    return;
+  }
+  box.innerHTML = `<div class="empty"><span class="spinner"></span> 搜索中…</div>`;
+  try {
+    const data = await api(`/api/episodes/search?q=${encodeURIComponent(q)}`);
+    const list = data.results || [];
+    if (!list.length) {
+      box.innerHTML = `<div class="empty">没有找到匹配的单集</div>`;
+      return;
+    }
+    box.innerHTML = list
+      .map(
+        (r) => `
+        <div class="search-hit">
+          <div class="search-hit-title">${escapeHtml(r.title)}${
+            r.show_name ? ` <span class="muted">· ${escapeHtml(r.show_name)}</span>` : ""
+          }</div>
+          <div class="search-hit-info muted">${escapeHtml(r.published || "日期未知")}${
+            r.duration ? " · " + escapeHtml(r.duration) : ""
+          }</div>
+          ${r.snippet ? `<div class="search-hit-snippet">${escapeHtml(r.snippet)}</div>` : ""}
+        </div>`
+      )
+      .join("");
+  } catch (e) {
+    box.innerHTML = `<div class="empty">搜索失败：${escapeHtml(e.message)}</div>`;
+  }
+}
+
 /* ---------- Deep link & bookmarklet ---------- */
 
 function handleDeepLink() {
@@ -826,7 +1000,12 @@ function bind() {
   $("autoScan").addEventListener("change", saveSettings);
   $("autoScanDays").addEventListener("change", saveSettings);
   $("autoScanLimit").addEventListener("change", saveSettings);
+  $("autoScanMode")?.addEventListener("change", saveSettings);
   $("btnAutoScanNow").addEventListener("click", runAutoScanNow);
+  $("btnContentSearch").addEventListener("click", doContentSearch);
+  $("contentSearchInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doContentSearch();
+  });
   $("btnSubscribe").addEventListener("click", toggleSubscribe);
   $("btnImportOpml").addEventListener("click", () => $("opmlFile").click());
   $("opmlFile").addEventListener("change", async (e) => {
@@ -842,6 +1021,7 @@ function bind() {
   $("btnExportOpml").addEventListener("click", exportOpml);
   $("btnScanLibrary").addEventListener("click", () => scanExisting(true));
   $("btnScanShow").addEventListener("click", () => scanExisting(true));
+  $("btnPerShowSave")?.addEventListener("click", savePerShowSettings);
   $("btnDismissOnboard")?.addEventListener("click", () => {
     localStorage.setItem("podstash-onboard", "1");
     $("onboard").classList.add("hidden");
@@ -871,6 +1051,9 @@ function bind() {
   $("btnRefreshTrend").addEventListener("click", () => loadTrending(state.trendSource));
   $("tabCn").addEventListener("click", () => loadTrending("cn"));
   $("tabIntl").addEventListener("click", () => loadTrending("apple"));
+  $("btnDismissUpdate")?.addEventListener("click", () => {
+    $("updateBanner")?.classList.add("hidden");
+  });
 }
 
 bind();
@@ -879,3 +1062,4 @@ loadSettings()
   .then(() => handleDeepLink())
   .catch((e) => toast(e.message));
 loadTrending("cn").catch((e) => toast(e.message));
+checkUpdate();

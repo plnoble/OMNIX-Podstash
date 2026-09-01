@@ -1,7 +1,7 @@
 {
-  "version": "0.3.2",
+  "version": "0.4.0",
   "versionCode": 6,
   "minSdk": 26,
-  "notes": "安卓：点开节目先出列表再检测本地；检测已有有进度提示；库页三步指引。",
+  "notes": "Docker 主线：阿里云 ACR 一键更新、SQLite 数据层、登录保护、shownotes、ID3 标签、只下新集开关、单集忽略。",
   "repo": "plnoble/OMNIX-Podstash"
 }
