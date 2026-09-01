@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OMNIX-Podstash · 私人播客库</title>
-    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="/static/style.css?v=0.3.1" />
   </head>
   <body>
     <div class="app">
@@ -16,8 +16,18 @@
             <p>私人播客库 · 搜、存、听都在你自己的设备上</p>
           </div>
         </div>
-        <div class="muted" id="appVersion">本地 · 127.0.0.1:8765</div>
+        <div class="muted" id="appVersion">本地</div>
       </header>
+
+      <section class="card onboard" id="onboard">
+        <strong>第一次用，按这三步</strong>
+        <ol>
+          <li>搜索常听的节目并点开</li>
+          <li>点「关注」，再点「检测已有文件」（把盘里已经有的标成已下载）</li>
+          <li>打开「定期自动扫描」，以后自动补没下过的</li>
+        </ol>
+        <button id="btnDismissOnboard" class="btn">知道了</button>
+      </section>
 
       <section class="card">
         <div class="row" style="margin-bottom: 10px">
@@ -52,44 +62,49 @@
         </div>
       </section>
 
-      <section class="card">
-        <div class="settings-grid">
-          <input id="outDir" type="text" placeholder="保存目录" />
-          <input
-            id="concurrency"
-            type="number"
-            min="1"
-            max="32"
-            value="32"
-            title="同时下载数（不是总集数上限）"
-          />
-          <button id="btnSaveSettings" class="btn">保存设置</button>
-          <button id="btnScanLibrary" class="btn" title="扫描目录里用其他工具下过的音频，并在本页标记为已下载">
-            检测已有文件
-          </button>
+      <section class="card" id="settingsCard">
+        <div class="row" style="justify-content: space-between">
+          <strong>设置与定期扫描</strong>
+          <button id="btnToggleSettings" class="btn btn-ghost">展开</button>
         </div>
-        <div class="muted" style="margin-top: 8px">
-          打开节目或点「检测已有文件」会扫描该目录。文件名包含单集标题即可识别，标记后不会重复下载。
+        <div id="settingsSummary" class="muted" style="margin-top: 8px"></div>
+        <div id="settingsExtra" class="hidden" style="margin-top: 12px">
+          <div class="settings-grid">
+            <input id="outDir" type="text" placeholder="保存目录" />
+            <input
+              id="concurrency"
+              type="number"
+              min="1"
+              max="32"
+              value="4"
+              title="同时下载数（不是总集数上限）"
+            />
+            <button id="btnSaveSettings" class="btn">保存设置</button>
+            <button id="btnScanLibrary" class="btn" title="扫描目录里用其他工具下过的音频，并在本页标记为已下载">
+              检测已有文件
+            </button>
+          </div>
+          <div class="muted" id="outDirHint" style="margin-top: 8px"></div>
+          <div class="auto-scan-row">
+            <label class="check">
+              <input type="checkbox" id="autoScan" />
+              定期自动扫描关注的节目，下载还没有的单集
+            </label>
+            <select id="autoScanDays" title="扫描间隔" style="width: 110px">
+              <option value="1">每天</option>
+              <option value="7" selected>每周</option>
+              <option value="14">每两周</option>
+            </select>
+            <select id="autoScanLimit" title="每档每次最多补多少集" style="width: 190px">
+              <option value="10">每档每次最多 10 集</option>
+              <option value="30" selected>每档每次最多 30 集</option>
+              <option value="50">每档每次最多 50 集</option>
+              <option value="0">不限制（整档补齐）</option>
+            </select>
+            <button id="btnAutoScanNow" class="btn">立即扫描一次</button>
+          </div>
+          <div class="muted" id="autoScanMeta" style="margin-top: 8px"></div>
         </div>
-        <div class="auto-scan-row">
-          <label class="check">
-            <input type="checkbox" id="autoScan" />
-            定期自动扫描关注的节目，下载还没有的单集
-          </label>
-          <select id="autoScanDays" title="扫描间隔" style="width: 110px">
-            <option value="1">每天</option>
-            <option value="7" selected>每周</option>
-            <option value="14">每两周</option>
-          </select>
-          <select id="autoScanLimit" title="每档每次最多补多少集" style="width: 190px">
-            <option value="10">每档每次最多 10 集</option>
-            <option value="30" selected>每档每次最多 30 集</option>
-            <option value="50">每档每次最多 50 集</option>
-            <option value="0">不限制（整档补齐）</option>
-          </select>
-          <button id="btnAutoScanNow" class="btn">立即扫描一次</button>
-        </div>
-        <div class="muted" id="autoScanMeta" style="margin-top: 8px"></div>
       </section>
 
       <section class="card" id="librarySection">
@@ -102,7 +117,7 @@
           </div>
         </div>
         <div id="libraryEmpty" class="muted" style="margin-bottom: 8px">
-          打开节目后点「关注」。定期扫描只处理已关注的节目。
+          还没有关注。上面搜索一个节目点开，再点「关注」。也可以导入 OPML。
         </div>
         <div id="libraryShows" class="shows"></div>
       </section>
@@ -148,6 +163,11 @@
           </button>
         </div>
 
+        <div id="workBanner" class="work-banner hidden">
+          <span class="spinner"></span>
+          <span id="workBannerText">处理中…</span>
+        </div>
+
         <div class="toolbar">
           <button id="btnAll" class="btn">全选</button>
           <button id="btnUndownloaded" class="btn">只选未下载</button>
@@ -168,6 +188,9 @@
         </div>
 
         <div id="epList" class="ep-list"></div>
+        <button id="btnMoreEpisodes" class="btn hidden" style="margin-top: 10px; width: 100%">
+          显示更多
+        </button>
       </section>
 
       <section id="progressSection" class="card progress-panel hidden">
@@ -202,6 +225,6 @@
     </div>
 
     <div id="toast" class="toast"></div>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=0.3.1"></script>
   </body>
 </html>

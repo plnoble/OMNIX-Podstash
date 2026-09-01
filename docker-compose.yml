@@ -2,7 +2,7 @@ version: "2"
 
 # 极空间 T2S：不要让它去拉 ghcr.io（国内失败 + 包默认私有）。
 # 正确顺序：
-#   1. 从 GitHub Release 下载 omnix-podstash-0.3.0-linux-arm64.tar
+#   1. 从 GitHub Release 下载 omnix-podstash-0.3.1-linux-arm64.tar
 #   2. 上传到极空间任意文件夹
 #   3. Docker → 镜像 → 本地镜像 → 导入
 #   4. 再粘贴本 YAML 创建项目
@@ -10,9 +10,12 @@ version: "2"
 
 services:
   podstash:
-    image: omnix-podstash:0.3.0
+    image: omnix-podstash:0.3.1
     container_name: omnix-podstash
     restart: always
+    dns:
+      - 223.5.5.5
+      - 119.29.29.29
     ports:
       - "8765:8765"
     environment:
@@ -23,6 +26,7 @@ services:
       - PODSTASH_CONFIG=/config
       - PODSTASH_CONCURRENCY=4
       - PODSTASH_NO_BROWSER=1
+      - PODSTASH_LIBRARY_LABEL=/tmp/zfsv3/nvme11/13906165220/data/播客
     volumes:
-      - "/tmp/zfsv3/nvme11/13906165220/data/Docker/omnix-podstash/podcasts:/podcasts"
+      - "/tmp/zfsv3/nvme11/13906165220/data/播客:/podcasts"
       - "/tmp/zfsv3/nvme11/13906165220/data/Docker/omnix-podstash/config:/config"

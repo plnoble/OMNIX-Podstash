@@ -51,6 +51,7 @@ _jobs: dict[str, DownloadJob] = {}
 _jobs_lock = asyncio.Lock()
 _scan_lock = asyncio.Lock()
 _scan_task: asyncio.Task[None] | None = None
+_scan_pending = False
 
 
 @asynccontextmanager
@@ -75,6 +76,7 @@ app = FastAPI(title="OMNIX-Podstash", version=app_version(), lifespan=lifespan)
 class ResolveBody(BaseModel):
     source: str = Field(..., description="Apple ID / show URL / RSS URL")
     country: str = "CN"
+    scan: bool = False
 
 
 class DownloadBody(BaseModel):
@@ -200,17 +202,32 @@ async def api_opml_export() -> PlainTextResponse:
 
 @app.post("/api/auto-scan")
 async def api_auto_scan_now() -> dict[str, Any]:
-    if _scan_lock.locked():
-        raise HTTPException(409, "已有扫描任务在进行")
-    result = await run_auto_scan(reason="manual")
-    return result
+    """Start a background scan; poll GET /api/auto-scan for progress."""
+    global _scan_pending
+    if _scan_lock.locked() or _scan_pending:
+        s = persist.public_settings()
+        return {
+            "ok": True,
+            "running": True,
+            "started": False,
+            "message": s.get("last_auto_scan_message") or "扫描进行中…",
+        }
+    persist.save({"last_auto_scan_message": "准备扫描关注的节目…"})
+    _scan_pending = True
+    asyncio.create_task(run_auto_scan(reason="manual"))
+    return {
+        "ok": True,
+        "running": True,
+        "started": True,
+        "message": "已开始扫描，页面会显示进度",
+    }
 
 
 @app.get("/api/auto-scan")
 async def api_auto_scan_status() -> dict[str, Any]:
     s = persist.public_settings()
     return {
-        "running": _scan_lock.locked(),
+        "running": _scan_lock.locked() or _scan_pending,
         "auto_scan": s["auto_scan"],
         "auto_scan_days": s["auto_scan_days"],
         "last_auto_scan": s["last_auto_scan"],
@@ -282,12 +299,17 @@ async def api_resolve(body: ResolveBody) -> dict[str, Any]:
         raise HTTPException(502, "解析失败: unknown")
 
     out_path = _out_dir()
-    local_rows, local_done = mark_episodes_local(out_path, show.name, episodes)
+    local_done = 0
     ep_payload = []
-    for e, local in zip(episodes, local_rows):
-        row = e.to_dict()
-        row.update(local)
-        ep_payload.append(row)
+    if body.scan:
+        local_rows, local_done = mark_episodes_local(out_path, show.name, episodes)
+        for e, local in zip(episodes, local_rows):
+            row = e.to_dict()
+            row.update(local)
+            ep_payload.append(row)
+    else:
+        for e in episodes:
+            ep_payload.append(e.to_dict())
 
     show_d = show.to_dict()
     show_d["subscribed"] = persist.is_subscribed(show_d)
@@ -296,6 +318,7 @@ async def api_resolve(body: ResolveBody) -> dict[str, Any]:
         "episodes": ep_payload,
         "via": via,
         "local_downloaded": local_done,
+        "scanned": bool(body.scan),
         "out_dir": str(out_path),
     }
 
@@ -440,7 +463,10 @@ async def api_retry_failed(job_id: str) -> dict[str, Any]:
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(STATIC / "index.html")
+    return FileResponse(
+        STATIC / "index.html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
@@ -452,9 +478,12 @@ def _show_source(show: dict[str, Any]) -> str:
 
 async def run_auto_scan(*, reason: str = "schedule") -> dict[str, Any]:
     """Fetch each subscribed show, skip files already on disk, download the rest."""
+    global _scan_pending
     if _scan_lock.locked():
+        _scan_pending = False
         return {"ok": False, "message": "已有扫描任务在进行"}
     async with _scan_lock:
+        _scan_pending = False
         shows = persist.subscribed()
         if not shows:
             msg = "没有关注的节目。先关注或导入 OPML。"
@@ -467,10 +496,13 @@ async def run_auto_scan(*, reason: str = "schedule") -> dict[str, Any]:
         queued = 0
         skipped_existing = 0
         failures: list[str] = []
-        for show in shows:
+        total = len(shows)
+        for i, show in enumerate(shows, start=1):
+            label = str(show.get("name") or show.get("feed_url") or "?")
+            persist.save({"last_auto_scan_message": f"正在扫描 {i}/{total}：{label}"})
             src = _show_source(show)
             if not src:
-                failures.append(f"{show.get('name') or '?'}: 缺少 RSS")
+                failures.append(f"{label}: 缺少 RSS")
                 continue
             try:
                 resolved, episodes = await resolve_source(src)

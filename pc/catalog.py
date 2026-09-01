@@ -152,21 +152,40 @@ async def fetch_apple_charts(country: str = "US", limit: int = 40) -> list[Show]
     return shows
 
 
+def _is_dns_error(err: BaseException) -> bool:
+    text = str(err).lower()
+    return "name resolution" in text or "errno -3" in text or "nodename nor servname" in text
+
+
 async def _trending_uncached(source: str) -> tuple[str, list[Show]]:
     src = (source or "cn").lower()
     if src in ("apple", "intl", "international", "us"):
         return "apple", await fetch_apple_charts("US", 40)
 
+    errors: list[str] = []
     try:
         shows = await fetch_xyzrank(40)
         if shows:
             return "xyzrank", shows
-    except Exception:
-        shows = []
+    except Exception as e:
+        errors.append(f"xyzrank: {e}")
 
-    # xyzrank down or empty → Apple China chart so the 中文 tab still works
-    fallback = await fetch_apple_charts("CN", 40)
-    return "apple-cn", fallback
+    try:
+        fallback = await fetch_apple_charts("CN", 40)
+        if fallback:
+            return "apple-cn", fallback
+    except Exception as e:
+        errors.append(f"apple: {e}")
+
+    if any(_is_dns_error(RuntimeError(x)) for x in errors) or any(
+        "name resolution" in x.lower() or "errno -3" in x.lower() for x in errors
+    ):
+        raise RuntimeError(
+            "容器无法解析域名（DNS）。极空间请在 YAML 的 podstash 下增加：\n"
+            "    dns:\n      - 223.5.5.5\n      - 119.29.29.29\n"
+            "保存后删除该项目再创建。搜索节目也可先试试。"
+        )
+    raise RuntimeError("热门榜暂时不可用：" + ("; ".join(errors) if errors else "无数据"))
 
 
 async def trending(source: str = "cn") -> tuple[str, list[Show]]:

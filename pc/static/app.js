@@ -1,5 +1,7 @@
 /* OMNIX-Podstash PC frontend */
 
+const EP_PAGE = 40;
+
 const state = {
   shows: [],
   trending: [],
@@ -7,9 +9,13 @@ const state = {
   trendSource: "cn",
   show: null,
   episodes: [],
+  epLimit: EP_PAGE,
   selected: new Set(),
   jobId: null,
   pollTimer: null,
+  loadGen: 0,
+  autoScanTimer: null,
+  libraryLabel: "",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -67,13 +73,20 @@ function fmtScanTime(ts) {
 
 function applySettings(s) {
   $("outDir").value = s.out_dir || "";
-  $("concurrency").value = s.concurrency || 32;
+  $("concurrency").value = s.concurrency || 4;
   $("autoScan").checked = !!s.auto_scan;
   $("autoScanDays").value = String(s.auto_scan_days || 7);
   $("autoScanLimit").value = String(s.auto_scan_limit ?? 30);
+  state.libraryLabel = s.library_label || "";
   const verEl = $("appVersion");
   if (verEl && s.version) {
     verEl.textContent = `v${s.version} · 本地`;
+  }
+  const hint = $("outDirHint");
+  if (hint) {
+    hint.textContent = state.libraryLabel
+      ? `容器内路径 ${s.out_dir}，实际对应 ${state.libraryLabel}。打开节目后点「检测已有文件」会扫描该目录。`
+      : `打开节目或点「检测已有文件」会扫描该目录。文件名包含单集标题即可识别。`;
   }
   const meta = [];
   meta.push(`关注 ${s.subscribed_count || 0} 档`);
@@ -82,6 +95,31 @@ function applySettings(s) {
   meta.push(`上次：${fmtScanTime(s.last_auto_scan)}`);
   if (s.last_auto_scan_message) meta.push(s.last_auto_scan_message);
   $("autoScanMeta").textContent = meta.join(" · ");
+  const sum = $("settingsSummary");
+  if (sum) {
+    const where = state.libraryLabel || s.out_dir || "";
+    sum.textContent = `${where} · ${meta[0]} · ${meta[1]}`;
+  }
+  syncOnboard(s.subscribed_count || 0);
+}
+
+function syncOnboard(subscribedCount) {
+  const el = $("onboard");
+  if (!el) return;
+  const dismissed = localStorage.getItem("podstash-onboard") === "1";
+  el.classList.toggle("hidden", dismissed || subscribedCount > 0);
+}
+
+function setWorkBanner(text) {
+  const bar = $("workBanner");
+  const label = $("workBannerText");
+  if (!bar) return;
+  if (!text) {
+    bar.classList.add("hidden");
+    return;
+  }
+  if (label) label.textContent = text;
+  bar.classList.remove("hidden");
 }
 
 async function loadSettings() {
@@ -164,20 +202,44 @@ async function toggleSubscribe() {
 
 async function runAutoScanNow() {
   const btn = $("btnAutoScanNow");
-  btn.disabled = true;
-  const old = btn.textContent;
-  btn.innerHTML = '<span class="spinner"></span> 扫描中';
   try {
     const data = await api("/api/auto-scan", { method: "POST", body: "{}" });
-    toast(data.message || "扫描完成");
-    await loadSettings();
-    if (state.show) await scanExisting(false);
+    toast(data.message || "已开始扫描");
+    setWorkBanner(data.message || "正在扫描关注的节目…");
+    pollAutoScan();
   } catch (e) {
     toast(e.message);
   } finally {
-    btn.disabled = false;
-    btn.textContent = old;
+    if (btn) btn.disabled = false;
   }
+}
+
+function pollAutoScan() {
+  clearInterval(state.autoScanTimer);
+  const tick = async () => {
+    try {
+      const s = await api("/api/auto-scan");
+      if (s.last_auto_scan_message) {
+        $("autoScanMeta").textContent = s.last_auto_scan_message;
+        setWorkBanner(s.running ? s.last_auto_scan_message : "");
+      }
+      if (!s.running) {
+        clearInterval(state.autoScanTimer);
+        state.autoScanTimer = null;
+        setWorkBanner("");
+        toast(s.last_auto_scan_message || "扫描结束");
+        await loadSettings();
+        if (state.show) await scanExisting(false);
+      }
+    } catch (e) {
+      clearInterval(state.autoScanTimer);
+      state.autoScanTimer = null;
+      setWorkBanner("");
+      toast(e.message);
+    }
+  };
+  tick();
+  state.autoScanTimer = setInterval(tick, 1000);
 }
 
 async function importOpmlFile(file) {
@@ -269,7 +331,7 @@ function renderShowGrid(box, list, kind) {
   box.innerHTML = list
     .map((s, i) => {
       const art = s.artwork
-        ? `<img src="${escapeAttr(s.artwork)}" alt="" loading="lazy" />`
+        ? `<img src="${escapeAttr(s.artwork)}" alt="" loading="lazy" decoding="async" />`
         : `<div class="art-ph">${escapeHtml((s.name || "?")[0])}</div>`;
       const rank =
         kind === "trend" && s.rank
@@ -321,41 +383,62 @@ async function doResolve() {
 }
 
 async function loadShow(source, preview = null) {
+  const gen = ++state.loadGen;
   const btn = $("btnResolve");
   btn.disabled = true;
   const old = btn.textContent;
   btn.innerHTML = '<span class="spinner"></span> 加载中';
+  if (preview) {
+    state.show = { ...preview, subscribed: preview.subscribed };
+    state.episodes = [];
+    state.selected = new Set();
+    state.epLimit = EP_PAGE;
+    renderEpisodes();
+    const box = $("epList");
+    box.innerHTML = `<div class="ep-skel"></div><div class="ep-skel"></div><div class="ep-skel"></div>
+      <div class="empty"><span class="spinner"></span> 正在拉取节目列表…</div>`;
+  }
+  setWorkBanner("正在拉取节目列表…");
+  $("episodesSection").classList.remove("hidden");
+  $("episodesSection").scrollIntoView({ behavior: "smooth", block: "start" });
   try {
     const data = await api("/api/resolve", {
       method: "POST",
       body: JSON.stringify({
         source,
         country: $("country").value,
+        scan: false,
       }),
     });
+    if (gen !== state.loadGen) return;
     state.show = { ...(preview || {}), ...data.show };
-    // keep preview artwork if resolve has none
     if (preview?.artwork && !state.show.artwork) state.show.artwork = preview.artwork;
     if (preview?.name && (!state.show.name || state.show.name === "Podcast")) {
       state.show.name = preview.name;
     }
     state.episodes = data.episodes || [];
     state.selected = new Set();
+    state.epLimit = EP_PAGE;
     const undown = state.episodes.filter((e) => !e.downloaded);
     const pick = (undown.length ? undown : state.episodes).slice(0, 10);
     pick.forEach((e) => state.selected.add(e.index));
     renderEpisodes();
-    const localN = data.local_downloaded || state.episodes.filter((e) => e.downloaded).length;
-    const extra = localN ? ` · 本地已有 ${localN} 集，再次下载会跳过` : "";
-    toast(`已加载全部 ${state.episodes.length} 集${extra}`);
-    // sync source input for shareability
+    toast(`已加载 ${state.episodes.length} 集，正在检测本地文件…`);
     if (state.show.id) $("sourceInput").value = state.show.id;
     else if (state.show.feed_url) $("sourceInput").value = state.show.feed_url;
+    await scanExisting(false);
+    if (gen !== state.loadGen) return;
+    const localN = state.episodes.filter((e) => e.downloaded).length;
+    if (localN) toast(`本地已有 ${localN} 集，不会重复下载`);
   } catch (e) {
+    if (gen !== state.loadGen) return;
+    setWorkBanner("");
     toast(e.message);
   } finally {
-    btn.disabled = false;
-    btn.textContent = old;
+    if (gen === state.loadGen) {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
   }
 }
 
@@ -397,12 +480,12 @@ function renderEpisodes() {
   const list = state.episodes.filter((e) =>
     filter ? (e.title || "").toLowerCase().includes(filter) : true
   );
-
+  const visible = list.slice(0, state.epLimit);
   const box = $("epList");
   if (!list.length) {
-    box.innerHTML = `<div class="empty">没有匹配的单集</div>`;
+    box.innerHTML = `<div class="empty">${state.episodes.length ? "没有匹配的单集" : "正在加载…"}</div>`;
   } else {
-    box.innerHTML = list
+    box.innerHTML = visible
       .map((e) => {
         const checked = state.selected.has(e.index) ? "checked" : "";
         const size = e.size ? fmtBytes(e.size) : e.local_size ? fmtBytes(e.local_size) : "";
@@ -423,15 +506,23 @@ function renderEpisodes() {
           </label>`;
       })
       .join("");
-
-    box.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
-      cb.addEventListener("change", () => {
+    if (!box._bound) {
+      box.addEventListener("change", (ev) => {
+        const cb = ev.target.closest("input[type=checkbox]");
+        if (!cb) return;
         const idx = Number(cb.dataset.index);
         if (cb.checked) state.selected.add(idx);
         else state.selected.delete(idx);
         updateSelectedCount();
       });
-    });
+      box._bound = true;
+    }
+  }
+  const more = $("btnMoreEpisodes");
+  if (more) {
+    const left = list.length - visible.length;
+    more.classList.toggle("hidden", left <= 0);
+    more.textContent = left > 0 ? `显示更多（还有 ${left} 集）` : "显示更多";
   }
   updateSelectedCount();
 }
@@ -476,6 +567,14 @@ async function scanExisting(notify) {
     if (notify) toast("请先加载一档节目，再检测该节目在目录里的已有文件");
     return;
   }
+  const where = state.libraryLabel || $("outDir").value.trim() || "下载目录";
+  const scanBtns = [$("btnScanLibrary"), $("btnScanShow")].filter(Boolean);
+  scanBtns.forEach((b) => {
+    b.disabled = true;
+    b.dataset.old = b.textContent;
+    b.innerHTML = '<span class="spinner"></span> 检测中';
+  });
+  setWorkBanner(`正在检测已有文件：扫描「${where}」…`);
   try {
     const data = await api("/api/local-status", {
       method: "POST",
@@ -491,12 +590,20 @@ async function scanExisting(notify) {
       ...(byIndex.get(e.index) || {}),
     }));
     renderEpisodes();
+    const n = data.local_downloaded || 0;
+    setWorkBanner(n ? `检测完成：已标记 ${n} 集为已下载` : "检测完成：这个节目在目录里没有识别到已有文件");
     if (notify) {
-      const n = data.local_downloaded || 0;
       toast(n ? `已标记 ${n} 集为已下载，不会重复下载` : "该目录里没有识别到已有文件（文件名需包含单集标题）");
     }
+    setTimeout(() => setWorkBanner(""), 2800);
   } catch (e) {
+    setWorkBanner("");
     if (notify) toast(e.message);
+  } finally {
+    scanBtns.forEach((b) => {
+      b.disabled = false;
+      b.textContent = b.dataset.old || "检测已有文件";
+    });
   }
 }
 
@@ -735,6 +842,20 @@ function bind() {
   $("btnExportOpml").addEventListener("click", exportOpml);
   $("btnScanLibrary").addEventListener("click", () => scanExisting(true));
   $("btnScanShow").addEventListener("click", () => scanExisting(true));
+  $("btnDismissOnboard")?.addEventListener("click", () => {
+    localStorage.setItem("podstash-onboard", "1");
+    $("onboard").classList.add("hidden");
+  });
+  $("btnToggleSettings")?.addEventListener("click", () => {
+    const extra = $("settingsExtra");
+    const open = extra.classList.toggle("hidden");
+    $("btnToggleSettings").textContent = extra.classList.contains("hidden") ? "展开" : "收起";
+    void open;
+  });
+  $("btnMoreEpisodes")?.addEventListener("click", () => {
+    state.epLimit += EP_PAGE;
+    renderEpisodes();
+  });
   $("btnAll").addEventListener("click", selectAllVisible);
   $("btnUndownloaded").addEventListener("click", selectUndownloaded);
   $("btnNone").addEventListener("click", clearSelection);
@@ -755,6 +876,6 @@ function bind() {
 bind();
 setupBookmarklet();
 loadSettings()
-  .then(() => loadTrending("cn"))
   .then(() => handleDeepLink())
   .catch((e) => toast(e.message));
+loadTrending("cn").catch((e) => toast(e.message));

@@ -1,7 +1,7 @@
 {
-  "version": "0.3.0",
+  "version": "0.3.1",
   "versionCode": 5,
   "minSdk": 26,
-  "notes": "定期自动扫描关注节目并下载未有单集（可开关）；提供 ARM 可用的 Docker Compose。",
+  "notes": "网页更顺：首次三步指引；点开节目先出列表再检测本地；检测/定期扫描显示进度。",
   "repo": "plnoble/OMNIX-Podstash"
 }

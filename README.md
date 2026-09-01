@@ -4,7 +4,7 @@
 
 不经过任何中转站：搜索走 Apple 公开目录，热门走中文播客榜 / Apple Top，音频走节目自己的 RSS 直链。
 
-当前版本 **0.3.0**
+当前版本 **0.3.1**
 
 ## 两端
 
@@ -48,7 +48,7 @@ Windows 也可在仓库根目录双击 `启动.bat`。
 2. 上传到极空间任意文件夹
 3. Docker → 镜像 → 本地镜像 → 导入镜像 → 从极空间导入
 4. 文件管理里建好 `.../omnix-podstash/podcasts` 和 `config` 两个空目录
-5. Docker → 新建项目，粘贴仓库里的 `docker-compose.yml`（`image: omnix-podstash:0.3.0`，没有 `build`）
+5. Docker → 新建项目，粘贴仓库里的 `docker-compose.yml`（`image: omnix-podstash:0.3.1`，没有 `build`）
 
 ### 其他 NAS 若能拉 GitHub 镜像
 
@@ -58,7 +58,7 @@ Windows 也可在仓库根目录双击 `启动.bat`。
 version: "3.8"
 services:
   podstash:
-    image: ghcr.io/plnoble/omnix-podstash:0.3.0
+    image: ghcr.io/plnoble/omnix-podstash:0.3.1
     container_name: omnix-podstash
     restart: unless-stopped
     ports:

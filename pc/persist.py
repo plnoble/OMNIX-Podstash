@@ -117,10 +117,9 @@ def save(patch: dict[str, Any] | None = None) -> dict[str, Any]:
         if not _state:
             _state.update(_blank_state())
         if patch:
+            allowed = _blank_state()
             for k, v in patch.items():
-                if k == "shows":
-                    _state["shows"] = v
-                elif k in _state:
+                if k == "shows" or k in allowed:
                     _state[k] = v
         path = _path or state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -144,6 +143,8 @@ def public_settings() -> dict[str, Any]:
         "last_auto_scan_message": str(s.get("last_auto_scan_message") or ""),
         "subscribed_count": len(shows),
         "config_dir": str(config_dir()),
+        "library_label": (os.environ.get("PODSTASH_LIBRARY_LABEL") or "").strip(),
+        "in_docker": Path("/.dockerenv").exists() or Path("/podcasts").is_dir(),
     }
 
 
