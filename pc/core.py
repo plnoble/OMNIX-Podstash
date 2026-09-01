@@ -1474,7 +1474,8 @@ async def fetch_cover(client: httpx.AsyncClient, url: str) -> bytes | None:
     if not url.startswith("http"):
         return None
     try:
-        r = await client.get(url)
+        # 短超时：封面拉取绝不能拖住真正的下载任务（默认 read 超时 300s）。
+        r = await client.get(url, timeout=httpx.Timeout(15.0, connect=10.0))
         if r.status_code == 200 and r.content:
             return r.content
     except Exception:

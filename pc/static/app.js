@@ -12,6 +12,7 @@ const state = {
   epLimit: EP_PAGE,
   selected: new Set(),
   jobId: null,
+  jobStartedAt: 0,
   pollTimer: null,
   loadGen: 0,
   autoScanTimer: null,
@@ -62,6 +63,15 @@ function fmtBytes(n) {
     i++;
   }
   return `${v.toFixed(i ? 1 : 0)} ${u[i]}`;
+}
+
+function fmtDuration(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  if (sec < 60) return `${sec} 秒`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m < 60) return `${m} 分 ${s} 秒`;
+  return `${Math.floor(m / 60)} 时 ${m % 60} 分`;
 }
 
 function fmtScanTime(ts) {
@@ -741,6 +751,7 @@ async function startDownload() {
       }),
     });
     state.jobId = data.job_id;
+    state.jobStartedAt = Date.now();
     $("progressSection").classList.remove("hidden");
     $("jobTitle").textContent = `下载：${state.show.name}`;
     $("progressSection").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -803,7 +814,17 @@ function pollJob() {
 function renderJob(job) {
   const pct = job.total ? Math.round((job.done / job.total) * 100) : 0;
   $("jobBar").style.width = `${pct}%`;
-  $("jobMeta").textContent = `${job.done}/${job.total} · 失败 ${job.failed} · ${job.status} · ${job.message || ""} · ${job.out_dir}`;
+  const running = (job.items || []).filter((i) => i.status === "running").length;
+  const elapsed = state.jobStartedAt
+    ? Math.max(0, Math.round((Date.now() - state.jobStartedAt) / 1000))
+    : 0;
+  const live =
+    job.status === "running"
+      ? `⏳ ${running ? `正在下载 ${running} 集` : "准备中"} · 已用时 ${fmtDuration(elapsed)}`
+      : `已用时 ${fmtDuration(elapsed)}`;
+  $("jobMeta").textContent = `${job.done}/${job.total} 完成 · 失败 ${job.failed} · ${live}${
+    job.message ? " · " + job.message : ""
+  }`;
   const statusLabel = {
     pending: "等待",
     running: "下载中",
@@ -837,7 +858,9 @@ function renderJob(job) {
           ? `${fmtBytes(it.bytes_done)} / ${fmtBytes(it.bytes_total)}`
           : it.bytes_done
             ? fmtBytes(it.bytes_done)
-            : "";
+            : it.status === "running"
+              ? "连接中…"
+              : "";
       const err =
         it.status === "error" && it.error
           ? `<div class="job-err">${escapeHtml(it.error)}</div>`
