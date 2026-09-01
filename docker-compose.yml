@@ -1,11 +1,9 @@
 version: "2"
 
-# 镜像发布在阿里云 ACR（国内直连、公开匿名可拉），地址：
-#   registry.cn-hangzhou.aliyuncs.com/omnix/omnix-podstash
+# 镜像发布在 GitHub Container Registry（ghcr.io），需要能访问 GitHub（国内可走代理/VPN）。
 #
-# 更新（推荐）：
+# 更新：
 #   docker compose pull && docker compose up -d
-# 或极空间 Docker → 项目 → 更新 / 重新创建；也可挂 watchtower 全自动。
 #
 # 兜底（拉不到镜像时）：从 GitHub Release 下载 omnix-podstash-*-linux-arm64.tar，
 # 极空间 Docker → 镜像 → 本地镜像 → 导入，再把下面 image 改成 omnix-podstash:<版本>。
@@ -13,7 +11,7 @@ version: "2"
 
 services:
   podstash:
-    image: registry.cn-hangzhou.aliyuncs.com/omnix/omnix-podstash:latest
+    image: ghcr.io/plnoble/omnix-podstash:latest
     container_name: omnix-podstash
     restart: always
     dns:

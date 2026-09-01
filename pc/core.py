@@ -1522,7 +1522,9 @@ async def run_download_job(
             "Accept": "*/*",
         },
         follow_redirects=True,
-        timeout=httpx.Timeout(connect=30.0, read=300.0, write=60.0, pool=30.0),
+        # read 是「无数据」超时：120s 内没有字节到达就判失败并自动重试，
+        # 避免 CDN 卡住时任务永远「下载中」。
+        timeout=httpx.Timeout(connect=20.0, read=120.0, write=60.0, pool=30.0),
         limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
     ) as client:
 

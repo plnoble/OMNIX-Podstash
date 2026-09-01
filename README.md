@@ -38,16 +38,16 @@ Windows 也可在仓库根目录双击 `启动.bat`。
 
 ## Docker（ARM NAS / 树莓派）
 
-镜像发布在**阿里云 ACR**（国内直连、公开匿名可拉）：
+镜像发布在 **GitHub Container Registry**（需能访问 GitHub，国内可走代理/VPN）：
 
 ```
-registry.cn-hangzhou.aliyuncs.com/omnix/omnix-podstash
+ghcr.io/plnoble/omnix-podstash:latest
 ```
 
 ### 部署（极空间 T2S 等 NAS）
 
 1. 文件管理里建好 `.../omnix-podstash/podcasts` 和 `config` 两个空目录。
-2. Docker → 新建项目，粘贴仓库里的 `docker-compose.yml`（已指向 ACR 镜像，没有 `build`）。
+2. Docker → 新建项目，粘贴仓库里的 `docker-compose.yml`（已指向 ghcr 镜像，没有 `build`）。
 3. 把 `volumes` 改成你实际的路径；浏览器打开 `http://NAS的IP:8765`。
 
 ### 更新
@@ -64,7 +64,7 @@ docker compose pull && docker compose up -d
 2. 极空间 Docker → 镜像 → 本地镜像 → 导入
 3. 把 `docker-compose.yml` 里的 `image` 改成 `omnix-podstash:<版本>` 再创建
 
-> 若仍想用 GitHub 镜像（ghcr.io，国内通常超时），镜像继续同步发布，tag 为 `ghcr.io/plnoble/omnix-podstash:latest`；也可用 `docker-compose.build.yml` 在 NAS 上本地编译。
+> 可选：阿里云 ACR 国内直连渠道会随 CI 一起推送（`registry.cn-hangzhou.aliyuncs.com/omnix/omnix-podstash`），但属于可选项、失败不影响发布；也可用 `docker-compose.build.yml` 在 NAS 上本地编译。
 
 ### 权限与访问保护
 
