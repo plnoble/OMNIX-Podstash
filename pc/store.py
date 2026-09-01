@@ -96,7 +96,6 @@ def _db() -> Iterator[sqlite3.Connection]:
     _db_path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(str(_db_path), timeout=15)
     db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=NORMAL")
     try:
         yield db
@@ -109,6 +108,8 @@ def init_schema() -> None:
     with _lock:
         with _db() as db:
             db.executescript(_SCHEMA)
+            # WAL is a persistent file property; set once, not per connection.
+            db.execute("PRAGMA journal_mode=WAL")
 
 
 # ---------------------------------------------------------------- settings
@@ -277,6 +278,48 @@ def upsert_episode(ep: dict[str, Any]) -> None:
                     ep.get("local_path") or "",
                     1 if ep.get("ignored") else 0,
                 ),
+            )
+
+
+def save_episodes(show_id: str, rows: list[dict[str, Any]]) -> None:
+    """Batch-upsert episodes in a single connection/transaction (fast for large feeds)."""
+    if not rows:
+        return
+    with _lock:
+        with _db() as db:
+            db.executemany(
+                """
+                INSERT INTO episodes(
+                  guid, show_id, title, audio_url, published, duration,
+                  size, description, local_path, ignored
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guid) DO UPDATE SET
+                  show_id=excluded.show_id,
+                  title=excluded.title,
+                  audio_url=excluded.audio_url,
+                  published=excluded.published,
+                  duration=excluded.duration,
+                  size=excluded.size,
+                  description=excluded.description,
+                  local_path=excluded.local_path,
+                  ignored=excluded.ignored
+                """,
+                [
+                    (
+                        (r.get("guid") or "").strip(),
+                        r.get("show_id") or show_id or "",
+                        r.get("title") or "",
+                        r.get("audio_url") or "",
+                        r.get("published") or "",
+                        r.get("duration") or "",
+                        int(r.get("size") or 0),
+                        r.get("description") or "",
+                        r.get("local_path") or "",
+                        1 if r.get("ignored") else 0,
+                    )
+                    for r in rows
+                    if (r.get("guid") or "").strip()
+                ],
             )
 
 

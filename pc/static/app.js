@@ -917,9 +917,16 @@ function escapeAttr(s) {
 
 function htmlToText(html) {
   if (!html) return "";
+  const key = html;
+  const hit = htmlToText._cache && htmlToText._cache.get(key);
+  if (hit !== undefined) return hit;
   const div = document.createElement("div");
   div.innerHTML = html;
-  return (div.textContent || "").replace(/\s+/g, " ").trim();
+  const text = (div.textContent || "").replace(/\s+/g, " ").trim();
+  if (!htmlToText._cache) htmlToText._cache = new Map();
+  if (htmlToText._cache.size > 500) htmlToText._cache.clear();
+  htmlToText._cache.set(key, text);
+  return text;
 }
 
 async function toggleIgnore(guid) {

@@ -249,24 +249,23 @@ def save_episodes(show_id: str, episodes: list[Any]) -> None:
     show_id = (show_id or "").strip()
     if not show_id:
         return
-    for ep in episodes:
-        guid = (getattr(ep, "guid", "") or "").strip()
-        if not guid:
-            continue
-        store.upsert_episode(
-            {
-                "guid": guid,
-                "show_id": show_id,
-                "title": getattr(ep, "title", "") or "",
-                "audio_url": getattr(ep, "audio_url", "") or "",
-                "published": getattr(ep, "published", "") or "",
-                "duration": getattr(ep, "duration", "") or "",
-                "size": int(getattr(ep, "size", 0) or 0),
-                "description": getattr(ep, "description", "") or "",
-                "local_path": "",
-                "ignored": False,
-            }
-        )
+    rows = [
+        {
+            "guid": (getattr(ep, "guid", "") or "").strip(),
+            "show_id": show_id,
+            "title": getattr(ep, "title", "") or "",
+            "audio_url": getattr(ep, "audio_url", "") or "",
+            "published": getattr(ep, "published", "") or "",
+            "duration": getattr(ep, "duration", "") or "",
+            "size": int(getattr(ep, "size", 0) or 0),
+            "description": getattr(ep, "description", "") or "",
+            "local_path": "",
+            "ignored": False,
+        }
+        for ep in episodes
+        if (getattr(ep, "guid", "") or "").strip()
+    ]
+    store.save_episodes(show_id, rows)
 
 
 def parse_opml(text: str) -> list[dict[str, Any]]:
