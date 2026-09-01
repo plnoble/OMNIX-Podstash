@@ -1,0 +1,27 @@
+version: "3.8"
+
+# 本机有仓库源码时用（SSH 进 NAS 后）：
+#   docker compose -f docker-compose.build.yml up -d --build
+# 不走 GitHub 镜像，直接在 ARM 上编译。
+
+services:
+  podstash:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: omnix-podstash:local
+    container_name: omnix-podstash
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      TZ: Asia/Shanghai
+      PODSTASH_HOST: "0.0.0.0"
+      PODSTASH_PORT: "8765"
+      PODSTASH_OUT_DIR: /podcasts
+      PODSTASH_CONFIG: /config
+      PODSTASH_CONCURRENCY: "4"
+      PODSTASH_NO_BROWSER: "1"
+    volumes:
+      - ./data/podcasts:/podcasts
+      - ./data/config:/config

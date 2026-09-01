@@ -38,21 +38,51 @@ Windows 也可在仓库根目录双击 `启动.bat`。
 
 ## Docker（ARM NAS / 树莓派）
 
-适合飞牛、绿联、群晖、极空间等 ARM 设备。用 YAML 安装：
+### 极空间 T2S（不要网上拉 ghcr.io）
 
-1. 把仓库放到设备上，或只保留根目录的 `Dockerfile`、`docker-compose.yml` 和 `pc/`。
-2. 编辑 `docker-compose.yml` 里的两个目录：音频 `/podcasts`、配置 `/config`。
-3. 在该目录执行：
+极空间在国内经常拉不了 GitHub 容器，而且该镜像默认私有，所以粘贴 YAML 会直接 `Task failed`。
 
-```bash
-docker compose up -d --build
+请改用 **导入本地镜像**：
+
+1. 从 [Releases](https://github.com/plnoble/OMNIX-Podstash/releases) 下载 `omnix-podstash-*-linux-arm64.tar`
+2. 上传到极空间任意文件夹
+3. Docker → 镜像 → 本地镜像 → 导入镜像 → 从极空间导入
+4. 文件管理里建好 `.../omnix-podstash/podcasts` 和 `config` 两个空目录
+5. Docker → 新建项目，粘贴仓库里的 `docker-compose.yml`（`image: omnix-podstash:0.3.0`，没有 `build`）
+
+### 其他 NAS 若能拉 GitHub 镜像
+
+不要写 `build:`。界面里没有 Dockerfile，带 `build` 会直接失败。只拉镜像：
+
+```yaml
+version: "3.8"
+services:
+  podstash:
+    image: ghcr.io/plnoble/omnix-podstash:0.3.0
+    container_name: omnix-podstash
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      TZ: Asia/Shanghai
+      PODSTASH_HOST: "0.0.0.0"
+      PODSTASH_OUT_DIR: /podcasts
+      PODSTASH_CONFIG: /config
+      PODSTASH_CONCURRENCY: "4"
+      PODSTASH_NO_BROWSER: "1"
+    volumes:
+      - /你复制的路径/podcasts:/podcasts
+      - /你复制的路径/config:/config
 ```
 
-本机 build 会按设备架构来（ARM64 就是 ARM 镜像）。浏览器打开 `http://设备IP:8765`，先关注节目或导入 OPML，再打开「定期自动扫描」。
+GitHub 容器镜像默认是私有的，极空间拉不下来。需要先把包改成公开：
 
-也可以用 GitHub 镜像（tag 发布后才有）：
+1. 打开 https://github.com/users/plnoble/packages/container/package/omnix-podstash
+2. Package settings → Change visibility → Public
 
-`ghcr.io/plnoble/omnix-podstash:latest`
+然后在极空间 Docker 里新建项目、粘贴 YAML、创建。浏览器打开 `http://NAS的IP:8765`。
+
+若 `ghcr.io` 一直超时（国内常见），用仓库里的 `docker-compose.build.yml` 在 NAS 上本地编译，不拉 GitHub 镜像。
 
 ## 版权
 

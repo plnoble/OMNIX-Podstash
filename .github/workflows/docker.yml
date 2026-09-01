@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -40,3 +40,31 @@ jobs:
             ghcr.io/plnoble/omnix-podstash:${{ steps.ver.outputs.tag }}
             ghcr.io/plnoble/omnix-podstash:latest
           provenance: false
+
+      - name: Make package public
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            /user/packages/container/omnix-podstash/visibility \
+            -f visibility=public
+
+      - name: Export ARM64 tar for 极空间 import
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/arm64
+          tags: omnix-podstash:${{ steps.ver.outputs.tag }}
+          outputs: type=docker,dest=/tmp/omnix-podstash-${{ steps.ver.outputs.tag }}-linux-arm64.tar
+          provenance: false
+
+      - name: Upload ARM64 tar to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.tag }}
+          files: /tmp/omnix-podstash-${{ steps.ver.outputs.tag }}-linux-arm64.tar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

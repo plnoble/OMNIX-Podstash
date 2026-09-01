@@ -1,51 +1,28 @@
-version: "3.8"
+version: "2"
 
-# OMNIX-Podstash · Docker（ARM / x86 均可）
-#
-# ARM 设备（飞牛 / 绿联 / 群晖 / 极空间 / 树莓派 64 位）：
-#   1. 把下面两个路径改成你机器上的目录
-#   2. 在该目录执行：docker compose up -d --build
-#      （本机 build，自动适配 ARM，不需要 x86 镜像）
-#
-# 已经能拉 GitHub 镜像时，可把 build 段删掉，只留 image。
+# 极空间 T2S：不要让它去拉 ghcr.io（国内失败 + 包默认私有）。
+# 正确顺序：
+#   1. 从 GitHub Release 下载 omnix-podstash-0.3.0-linux-arm64.tar
+#   2. 上传到极空间任意文件夹
+#   3. Docker → 镜像 → 本地镜像 → 导入
+#   4. 再粘贴本 YAML 创建项目
+# volumes 用界面「查询路径」复制出来的目录，并先建好 podcasts、config 两个空文件夹。
 
 services:
   podstash:
-    image: ghcr.io/plnoble/omnix-podstash:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: omnix-podstash:0.3.0
     container_name: omnix-podstash
-    restart: unless-stopped
+    restart: always
     ports:
       - "8765:8765"
     environment:
-      TZ: Asia/Shanghai
-      PODSTASH_HOST: "0.0.0.0"
-      PODSTASH_PORT: "8765"
-      PODSTASH_OUT_DIR: /podcasts
-      PODSTASH_CONFIG: /config
-      PODSTASH_CONCURRENCY: "4"
-      PODSTASH_NO_BROWSER: "1"
-      # 第一次启动可打开定期扫描（之后以网页里的开关为准）：
-      # PODSTASH_AUTO_SCAN: "1"
-      # PODSTASH_AUTO_SCAN_DAYS: "7"
-      # PODSTASH_AUTO_SCAN_LIMIT: "30"
+      - TZ=Asia/Shanghai
+      - PODSTASH_HOST=0.0.0.0
+      - PODSTASH_PORT=8765
+      - PODSTASH_OUT_DIR=/podcasts
+      - PODSTASH_CONFIG=/config
+      - PODSTASH_CONCURRENCY=4
+      - PODSTASH_NO_BROWSER=1
     volumes:
-      # 默认写到当前目录 data/。若音频已在别的盘，改成绝对路径，例如：
-      # 群晖 /volume1/docker/podstash/podcasts
-      # 飞牛 /vol1/1000/docker/podstash/podcasts
-      - ./data/podcasts:/podcasts
-      - ./data/config:/config
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=3)",
-        ]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+      - "/tmp/zfsv3/nvme11/13906165220/data/Docker/omnix-podstash/podcasts:/podcasts"
+      - "/tmp/zfsv3/nvme11/13906165220/data/Docker/omnix-podstash/config:/config"
