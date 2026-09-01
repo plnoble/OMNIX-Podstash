@@ -247,7 +247,19 @@ private fun LibraryPane(vm: AppViewModel) {
             item { QueueBar(vm, q, state.downloadsPaused) }
         }
         if (subs.isEmpty()) {
-            item { Text("还没有关注的节目。到「发现」里点进一档，再点星标关注。", color = Muted) }
+            item {
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Soft).padding(14.dp)) {
+                    Text("第一次用，按这三步", color = TextC, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(8.dp))
+                    Text("1. 到「发现」搜索常听的节目并点开", color = Muted, fontSize = 13.sp)
+                    Text("2. 点星标关注，再点「检测已有」", color = Muted, fontSize = 13.sp)
+                    Text("3. 设置里打开「定期自动扫描」", color = Muted, fontSize = 13.sp)
+                    Spacer(Modifier.height(10.dp))
+                    Button(onClick = { vm.setTab(1) }, colors = ButtonDefaults.buttonColors(containerColor = Accent)) {
+                        Text("去发现")
+                    }
+                }
+            }
         } else {
             item { Text("已关注", color = TextC, fontWeight = FontWeight.SemiBold) }
         }
@@ -414,6 +426,17 @@ private fun ShowPane(vm: AppViewModel) {
                 QueueBar(vm, q, state.downloadsPaused)
             }
             TextButton(onClick = { vm.setTab(1) }) { Text("返回发现", color = Muted) }
+            if (state.loading.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Bg).padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(Modifier.size(16.dp), color = Accent, strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(state.loading, color = Accent, fontSize = 13.sp)
+                }
+            }
         }
         items(state.episodes, key = { it.guid.ifBlank { it.audioUrl + it.index } }) { ep ->
             val k = ep.guid.ifBlank { ep.audioUrl + ep.index }

@@ -1,7 +1,7 @@
 {
-  "version": "0.3.1",
-  "versionCode": 5,
+  "version": "0.3.2",
+  "versionCode": 6,
   "minSdk": 26,
-  "notes": "网页更顺：首次三步指引；点开节目先出列表再检测本地；检测/定期扫描显示进度。",
+  "notes": "安卓：点开节目先出列表再检测本地；检测已有有进度提示；库页三步指引。",
   "repo": "plnoble/OMNIX-Podstash"
 }

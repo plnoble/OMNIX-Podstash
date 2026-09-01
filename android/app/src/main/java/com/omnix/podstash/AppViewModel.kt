@@ -82,6 +82,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var tickerJob: Job? = null
     private var sleepJob: Job? = null
     private var playListener: Player.Listener? = null
+    private var openGen: Int = 0
 
     init {
         startTicker()
@@ -141,27 +142,42 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openShow(source: String, preview: Show? = null) {
+        val gen = ++openGen
         viewModelScope.launch {
-            _ui.value = _ui.value.copy(loading = "加载全集并检测本地文件…", selectMode = false, selected = emptySet())
+            _ui.value = _ui.value.copy(
+                tab = 3,
+                current = preview ?: Show(id = "", name = "加载中…"),
+                episodes = emptyList(),
+                selectMode = false,
+                selected = emptySet(),
+                loading = "正在拉取节目列表…",
+            )
             try {
                 val (show, eps) = withContext(Dispatchers.IO) { Catalog.resolve(source, _ui.value.country) }
+                if (gen != openGen) return@launch
                 val merged = show.copy(
                     artwork = show.artwork.ifBlank { preview?.artwork.orEmpty() },
                     name = if (show.name.isBlank() || show.name == "Podcast") preview?.name ?: show.name else show.name,
                     subscribed = store.shows.any { it.key() == show.key() && it.subscribed },
                     lastSeenGuid = store.shows.find { it.key() == show.key() }?.lastSeenGuid.orEmpty(),
                 )
-                val marked = withContext(Dispatchers.IO) { store.scanAndMark(merged, eps) }
                 store.upsertShow(merged)
+                _ui.value = _ui.value.copy(
+                    current = merged,
+                    episodes = eps,
+                    loading = "正在检测已有文件…",
+                )
+                val marked = withContext(Dispatchers.IO) { store.scanAndMark(merged, eps) }
+                if (gen != openGen) return@launch
                 val localN = marked.count { it.downloaded }
                 _ui.value = _ui.value.copy(
                     current = merged,
                     episodes = marked,
                     loading = "",
-                    tab = 3,
-                    toast = if (localN > 0) "已加载 ${marked.size} 集 · 本地已有 $localN 集" else "",
+                    toast = if (localN > 0) "已加载 ${marked.size} 集 · 本地已有 $localN 集" else "已加载 ${marked.size} 集",
                 )
             } catch (e: Exception) {
+                if (gen != openGen) return@launch
                 _ui.value = _ui.value.copy(loading = "", toast = e.message ?: "解析失败")
             }
         }
@@ -489,14 +505,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         viewModelScope.launch {
-            _ui.value = _ui.value.copy(loading = loadingMsg)
+            _ui.value = _ui.value.copy(loading = loadingMsg, toast = loadingMsg)
             try {
                 val marked = withContext(Dispatchers.IO) { store.scanAndMark(show, eps) }
                 val n = marked.count { it.downloaded }
                 _ui.value = _ui.value.copy(
                     episodes = marked,
                     loading = "",
-                    toast = if (n > 0) "已标记 $n 集为已下载，不会重复下载" else "没有识别到已有文件（文件名需包含单集标题）",
+                    toast = if (n > 0) "检测完成：已标记 $n 集为已下载" else "检测完成：没有识别到已有文件（文件名需包含单集标题）",
                 )
             } catch (e: Exception) {
                 _ui.value = _ui.value.copy(loading = "", toast = e.message ?: "检测失败")
