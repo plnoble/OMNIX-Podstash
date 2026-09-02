@@ -702,8 +702,11 @@ async def api_upgrade_quality(body: UpgradeQualityBody) -> dict[str, Any]:
     async def _run() -> None:
         await _run_job_with_retries(job, concurrency)
         upg = sum(1 for i in job.items if i.status == "done" and i.upgrade)
+        skip_upg = sum(1 for i in job.items if i.status == "skipped" and i.upgrade)
         if upg:
             store.log_event("upgrade", name, upg)
+        if skip_upg:
+            store.log_event("info", name, skip_upg, "源端无更高码率，保留原文件")
         store.prune_events(500)
 
     asyncio.create_task(_run())
@@ -972,6 +975,7 @@ async def run_auto_scan(
         skipped_existing = 0
         downloaded_total = 0
         upgraded_total = 0
+        skipped_upgrade_total = 0
         failures: list[str] = []
         total = len(target_shows)
         for i, show in enumerate(target_shows, start=1):
@@ -1070,18 +1074,24 @@ async def run_auto_scan(
             await _run_job_with_retries(job, concurrency)
             new_n = sum(1 for i in job.items if i.status == "done" and not i.upgrade)
             upg_n = sum(1 for i in job.items if i.status == "done" and i.upgrade)
+            skip_upg_n = sum(1 for i in job.items if i.status == "skipped" and i.upgrade)
             downloaded_total += new_n
             upgraded_total += upg_n
+            skipped_upgrade_total += skip_upg_n
             queued += sum(1 for i in job.items if i.status in ("done", "skipped", "error"))
             if new_n:
                 store.log_event("download", name, new_n)
             if upg_n:
                 store.log_event("upgrade", name, upg_n)
+            if skip_upg_n:
+                store.log_event("info", name, skip_upg_n, "源端无更高码率，保留原文件")
         parts = [f"扫描{len(target_shows)}档"]
         if downloaded_total:
             parts.append(f"新下 {downloaded_total}")
         if upgraded_total:
             parts.append(f"升级 {upgraded_total}")
+        if skipped_upgrade_total:
+            parts.append(f"无更高码率 {skipped_upgrade_total}")
         if skipped_existing:
             parts.append(f"本地已有 {skipped_existing}")
         if failures:
@@ -1099,6 +1109,7 @@ async def run_auto_scan(
             "queued": queued,
             "downloaded": downloaded_total,
             "upgraded": upgraded_total,
+            "skipped_upgrade": skipped_upgrade_total,
             "local_existing": skipped_existing,
             "failures": failures,
             "reason": reason,

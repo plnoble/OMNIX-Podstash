@@ -218,6 +218,16 @@ def is_low_quality(path: Path, ep: Episode) -> bool:
     bitrate-independent of the byte-length mismatch between quality tiers, so a
     file is only flagged when its effective bitrate is well below the feed's.
     """
+    # If we already downloaded the feed URL and got the same bitrate back, the
+    # feed's reported size is unreliable (e.g. ximalaya) — don't keep flagging it.
+    try:
+        recs = (read_index(path.parent).get("episodes") or {})
+    except OSError:
+        recs = {}
+    for key in _index_keys(ep):
+        rec = recs.get(key)
+        if isinstance(rec, dict) and rec.get("verified"):
+            return False
     want = _rss_bitrate_bps(ep)
     got = _file_bitrate_bps(path)
     if not want or not got:
@@ -666,15 +676,38 @@ def remember_local_file(folder: Path, ep: Episode, dest: Path) -> None:
     if size <= 0:
         return
     data = read_index(folder)
+    episodes = data.setdefault("episodes", {})
+    # Preserve the "verified" marker across re-detection so a source we already
+    # confirmed offers no higher quality is not re-flagged as low quality.
+    verified = False
+    for key in _index_keys(ep):
+        old = episodes.get(key)
+        if isinstance(old, dict) and old.get("verified"):
+            verified = True
+            break
     rec = {
         "title": ep.title,
         "file": dest.name,
         "size": size,
-        "complete": is_complete_file(dest, ep.size),
+        "complete": is_complete_file(dest, ep.size, expected_duration=ep.duration),
         "guid": ep.guid or "",
     }
+    if verified:
+        rec["verified"] = True
+    for key in _index_keys(ep):
+        episodes[key] = rec
+    write_index(folder, data)
+
+
+def _mark_source_verified(folder: Path, ep: Episode) -> None:
+    """Remember that this episode's feed offers no higher quality than what we have."""
+    data = read_index(folder)
     episodes = data.setdefault("episodes", {})
     for key in _index_keys(ep):
+        rec = episodes.get(key)
+        if not isinstance(rec, dict):
+            rec = {"title": ep.title, "file": "", "size": 0, "complete": True, "guid": ep.guid or ""}
+        rec["verified"] = True
         episodes[key] = rec
     write_index(folder, data)
 
@@ -1639,9 +1672,15 @@ async def _download_upgrade(
     old_bps = _file_bitrate_bps(dest) if dest.exists() else None
     new_bps = _file_bitrate_bps(tmp)
     if old_bps is not None and new_bps is not None and new_bps <= old_bps * 1.02:
+        # The feed's reported size is unreliable (e.g. ximalaya RSS claims a
+        # high-bitrate length but actually serves the same file). This is a
+        # skip, not a failure: keep the original and stop flagging it.
         tmp.unlink(missing_ok=True)
-        item.status = "error"
-        item.error = "新文件码率未提升，保留原文件"
+        _mark_source_verified(folder, item.episode)
+        remember_local_file(folder, item.episode, dest)
+        item.path = str(dest)
+        item.status = "skipped"
+        item.error = "源端无更高码率，已保留原文件"
         on_touch()
         return
 
@@ -1772,7 +1811,8 @@ async def run_download_job(
             on_update(job)
         return
     failed = sum(1 for i in job.items if i.status == "error")
-    skipped = sum(1 for i in job.items if i.status == "skipped")
+    skipped = sum(1 for i in job.items if i.status == "skipped" and not i.upgrade)
+    skipped_upgrade = sum(1 for i in job.items if i.status == "skipped" and i.upgrade)
     downloaded = sum(1 for i in job.items if i.status == "done" and not i.upgrade)
     upgraded = sum(1 for i in job.items if i.status == "done" and i.upgrade)
     job.status = "error" if failed and failed == len(job.items) else "done"
@@ -1783,6 +1823,8 @@ async def run_download_job(
         parts.append(f"升级 {upgraded}")
     if skipped:
         parts.append(f"已存在 {skipped}")
+    if skipped_upgrade:
+        parts.append(f"无更高码率 {skipped_upgrade}")
     if failed:
         parts.append(f"失败 {failed} — 可点「重试失败」")
     job.message = "完成，" + "，".join(parts) if parts else "全部完成"
