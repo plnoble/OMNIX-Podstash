@@ -116,13 +116,53 @@ def _index_keys(ep: Episode) -> list[str]:
     return keys
 
 
-def is_complete_file(path: Path, expected_size: int = 0, *, lenient: bool = False) -> bool:
+def _parse_duration_sec(value: str) -> Optional[float]:
+    """Parse an itunes:duration (H:MM:SS, MM:SS, or integer seconds) to seconds."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    m = re.match(r"^(?:(\d+):)?(\d{1,2}):(\d{2})$", text)
+    if m:
+        h = int(m.group(1) or 0)
+        minutes = int(m.group(2))
+        sec = int(m.group(3))
+        return float(h * 3600 + minutes * 60 + sec)
+    return None
+
+
+def _read_audio_duration_sec(path: Path) -> Optional[float]:
+    """Actual playback duration in seconds, or None if the file is unreadable/corrupt."""
+    try:
+        from mutagen import File as MutagenFile
+
+        mf = MutagenFile(str(path))
+        if mf is not None and getattr(mf, "info", None) is not None:
+            length = getattr(mf.info, "length", None)
+            if isinstance(length, (int, float)) and length > 0:
+                return float(length)
+    except Exception:
+        pass
+    return None
+
+
+def is_complete_file(
+    path: Path,
+    expected_size: int = 0,
+    *,
+    expected_duration: str = "",
+    lenient: bool = False,
+) -> bool:
     """True if path looks like a finished episode, not a failed/partial stub.
 
-    ``lenient=True`` accepts a plausible lower-bitrate encode: RSS often
-    reports the high-bitrate byte length (e.g. ximalaya 256kbps) while the
-    library file is a smaller bitrate (e.g. 64kbps ≈ 25% of that). Only reject
-    files that are clearly nowhere near the expected size.
+    When the feed provides a duration, compare it against the file's actual
+    playback duration — bitrate-independent, so a complete lower-bitrate file
+    still matches while a truncated download plays much shorter. Only fall back
+    to a byte-size heuristic when the duration is unavailable.
     """
     try:
         st = path.stat().st_size
@@ -130,6 +170,19 @@ def is_complete_file(path: Path, expected_size: int = 0, *, lenient: bool = Fals
         return False
     if st <= MIN_COMPLETE_BYTES:
         return False
+
+    want_sec = _parse_duration_sec(expected_duration)
+    if want_sec:
+        actual_sec = _read_audio_duration_sec(path)
+        if actual_sec is None:
+            # A valid audio file should be parseable; an unreadable one is
+            # likely truncated/corrupt. Accept only if the size is essentially
+            # complete, to avoid rejecting an exotic-but-valid codec.
+            if expected_size and expected_size > 0:
+                return st >= int(expected_size * 0.98)
+            return False
+        return actual_sec >= want_sec * 0.90
+
     if expected_size and expected_size > 0:
         ratio = 0.10 if lenient else 0.98
         return st >= int(expected_size * ratio)
@@ -523,7 +576,10 @@ def mark_episodes_local(
         except OSError:
             size = 0
         complete = is_complete_file(
-            path, expected_size_for(path.parent, ep, path), lenient=lenient
+            path,
+            expected_size_for(path.parent, ep, path),
+            expected_duration=getattr(ep, "duration", "") or "",
+            lenient=lenient,
         )
         if complete:
             done += 1
