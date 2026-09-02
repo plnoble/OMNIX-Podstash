@@ -1,7 +1,7 @@
 {
-  "version": "0.4.3",
-  "versionCode": 9,
+  "version": "0.4.4",
+  "versionCode": 10,
   "minSdk": 26,
-  "notes": "修复：同名节目重复关注（数据库主键 bug，如两个《知行小酒馆》）；修复 RSS 节目主键为空导致互相覆盖；启动时自动合并重复条目。",
+  "notes": "修复：已有文件因体积校验过严被误判为未下载（低码率文件 vs 高码率 RSS 体积，如《日谈公园》）；检测到的体积会记入索引避免重复下载。",
   "repo": "plnoble/OMNIX-Podstash"
 }

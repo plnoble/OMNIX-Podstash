@@ -116,17 +116,24 @@ def _index_keys(ep: Episode) -> list[str]:
     return keys
 
 
-def is_complete_file(path: Path, expected_size: int = 0) -> bool:
-    """True if path looks like a finished episode, not a failed/partial stub."""
+def is_complete_file(path: Path, expected_size: int = 0, *, lenient: bool = False) -> bool:
+    """True if path looks like a finished episode, not a failed/partial stub.
+
+    ``lenient=True`` accepts a plausible lower-bitrate encode: RSS often
+    reports the high-bitrate byte length (e.g. ximalaya 256kbps) while the
+    library file is a smaller bitrate (e.g. 64kbps ≈ 25% of that). Only reject
+    files that are clearly nowhere near the expected size.
+    """
     try:
         st = path.stat().st_size
     except OSError:
         return False
-    if st <= 0:
+    if st <= MIN_COMPLETE_BYTES:
         return False
     if expected_size and expected_size > 0:
-        return st >= int(expected_size * 0.98)
-    return st >= MIN_COMPLETE_BYTES
+        ratio = 0.10 if lenient else 0.98
+        return st >= int(expected_size * ratio)
+    return True
 
 
 _AUDIO_EXT_RE = re.compile(r"\.(mp3|m4a|mp4|aac|ogg|opus|wav|flac)$", re.IGNORECASE)
@@ -492,6 +499,8 @@ def mark_episodes_local(
     out_dir: Path,
     show_name: str,
     episodes: list[Episode],
+    *,
+    lenient: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
     """Return per-episode local status dicts and the count of complete files found."""
     mapping = match_episodes_in_library(out_dir, show_name, episodes, remember=True)
@@ -513,7 +522,9 @@ def mark_episodes_local(
             size = path.stat().st_size
         except OSError:
             size = 0
-        complete = is_complete_file(path, expected_size_for(path.parent, ep, path))
+        complete = is_complete_file(
+            path, expected_size_for(path.parent, ep, path), lenient=lenient
+        )
         if complete:
             done += 1
         rows.append(
@@ -528,8 +539,8 @@ def mark_episodes_local(
 
 
 def expected_size_for(folder: Path, ep: Episode, dest: Optional[Path] = None) -> int:
-    if ep.size and ep.size > 0:
-        return int(ep.size)
+    # Prefer the size Podstash recorded at download/detection time (reliable),
+    # and only fall back to the feed-reported size when nothing is recorded.
     records = (read_index(folder).get("episodes") or {})
     for key in _index_keys(ep):
         rec = records.get(key)
@@ -540,6 +551,8 @@ def expected_size_for(folder: Path, ep: Episode, dest: Optional[Path] = None) ->
                 sz = 0
             if sz > 0:
                 return sz
+    if ep.size and ep.size > 0:
+        return int(ep.size)
     return 0
 
 

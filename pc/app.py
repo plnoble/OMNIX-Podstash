@@ -596,7 +596,7 @@ async def api_resolve(body: ResolveBody) -> dict[str, Any]:
     local_done = 0
     ep_payload = []
     if body.scan:
-        local_rows, local_done = mark_episodes_local(out_path, show.name, episodes)
+        local_rows, local_done = mark_episodes_local(out_path, show.name, episodes, lenient=True)
         for e, local in zip(episodes, local_rows):
             row = e.to_dict()
             row.update(local)
@@ -637,7 +637,7 @@ async def api_local_status(body: LocalStatusBody) -> dict[str, Any]:
                 size=int(raw.get("size") or 0),
             )
         )
-    local_rows, local_done = mark_episodes_local(out_dir, body.show_name, episodes)
+    local_rows, local_done = mark_episodes_local(out_dir, body.show_name, episodes, lenient=True)
     rows = []
     for ep, local in zip(episodes, local_rows):
         row = {"index": ep.index}
