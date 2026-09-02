@@ -189,6 +189,42 @@ def is_complete_file(
     return True
 
 
+def _file_bitrate_bps(path: Path) -> Optional[float]:
+    """Effective audio bitrate in bits/sec, or None if unreadable."""
+    try:
+        st = path.stat().st_size
+    except OSError:
+        return None
+    dur = _read_audio_duration_sec(path)
+    if not dur or dur <= 0 or st <= 0:
+        return None
+    return float(st) * 8 / dur
+
+
+def _rss_bitrate_bps(ep: Episode) -> Optional[float]:
+    """Feed-reported bitrate in bits/sec (size ÷ duration), or None if unknown."""
+    if not (ep.size and ep.size > 0):
+        return None
+    dur = _parse_duration_sec(ep.duration)
+    if not dur or dur <= 0:
+        return None
+    return float(ep.size) * 8 / dur
+
+
+def is_low_quality(path: Path, ep: Episode) -> bool:
+    """True if the file is complete but clearly lower bitrate than the feed.
+
+    Used to flag pre-existing low-bitrate files for optional upgrade. Bitrate is
+    bitrate-independent of the byte-length mismatch between quality tiers, so a
+    file is only flagged when its effective bitrate is well below the feed's.
+    """
+    want = _rss_bitrate_bps(ep)
+    got = _file_bitrate_bps(path)
+    if not want or not got:
+        return False
+    return got < want * 0.70
+
+
 _AUDIO_EXT_RE = re.compile(r"\.(mp3|m4a|mp4|aac|ogg|opus|wav|flac)$", re.IGNORECASE)
 _KEEP_CHARS_RE = re.compile(r"[^0-9a-zA-Z\u4e00-\u9fff]+")
 # Dates / EP12 / 第n期 may sit against CJK with no space. Bare "95后" must NOT lose "95".
@@ -711,6 +747,7 @@ class DownloadItem:
     bytes_done: int = 0
     bytes_total: int = 0
     error: str = ""
+    upgrade: bool = False  # re-download as higher quality and replace the old file
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -721,6 +758,7 @@ class DownloadItem:
             "bytes_done": self.bytes_done,
             "bytes_total": self.bytes_total,
             "error": self.error,
+            "upgrade": self.upgrade,
         }
 
 
@@ -1552,6 +1590,77 @@ async def fetch_cover(client: httpx.AsyncClient, url: str) -> bytes | None:
     return None
 
 
+async def _download_upgrade(
+    client: httpx.AsyncClient,
+    item: DownloadItem,
+    dest: Path,
+    job: DownloadJob,
+    cover: bytes | None,
+    on_touch: Callable[[], None],
+    *,
+    max_attempts: int,
+) -> None:
+    """Re-download a low-bitrate file as high quality, then atomically replace it.
+
+    Downloads into a hidden temp file, verifies the new file plays the full
+    duration and is actually higher bitrate, and only then swaps out the old
+    file. On any failure the original file is left untouched.
+    """
+    folder = dest.parent
+    tmp = dest.with_name(f".{dest.stem}.upgrade{dest.suffix}")
+    tmp.unlink(missing_ok=True)
+    item.path = ""
+    await download_one(
+        client,
+        item,
+        tmp,
+        on_progress=lambda _i: on_touch(),
+        max_attempts=max_attempts,
+    )
+    if item.status != "done" or not tmp.exists():
+        tmp.unlink(missing_ok=True)
+        on_touch()
+        return
+
+    # Only replace when the new file is complete AND genuinely higher bitrate.
+    if not is_complete_file(tmp, item.episode.size, expected_duration=item.episode.duration):
+        tmp.unlink(missing_ok=True)
+        item.status = "error"
+        item.error = "新文件校验不完整，保留原文件"
+        on_touch()
+        return
+    old_bps = _file_bitrate_bps(dest) if dest.exists() else None
+    new_bps = _file_bitrate_bps(tmp)
+    if old_bps is not None and new_bps is not None and new_bps <= old_bps * 1.02:
+        tmp.unlink(missing_ok=True)
+        item.status = "error"
+        item.error = "新文件码率未提升，保留原文件"
+        on_touch()
+        return
+
+    try:
+        dest.unlink(missing_ok=True)
+        tmp.replace(dest)
+    except OSError as e:
+        tmp.unlink(missing_ok=True)
+        item.status = "error"
+        item.error = f"替换失败，保留原文件: {e}"
+        on_touch()
+        return
+
+    item.path = str(dest)
+    remember_local_file(folder, item.episode, dest)
+    write_media_tags(
+        dest,
+        title=item.episode.title,
+        artist=job.show_name,
+        album=job.show_name,
+        track=max(0, item.episode.index) + 1,
+        cover=cover,
+    )
+    on_touch()
+
+
 async def run_download_job(
     job: DownloadJob,
     concurrency: int = 32,
@@ -1609,6 +1718,11 @@ async def run_download_job(
                     return
                 dest = build_dest_path(out, job.show_name, item.episode)
                 folder = dest.parent
+                if item.upgrade:
+                    await _download_upgrade(
+                        client, item, dest, job, cover, touch, max_attempts=max_attempts
+                    )
+                    return
                 expected = expected_size_for(folder, item.episode, dest)
                 if dest.exists() and is_complete_file(dest, expected):
                     st = dest.stat().st_size

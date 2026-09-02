@@ -40,6 +40,7 @@ from core import (
     USER_AGENT,
     fetch_cover,
     find_existing_in_library,
+    is_low_quality,
     iter_audio_files,
     iter_show_folders,
     mark_episodes_local,
@@ -106,6 +107,7 @@ def _restore_jobs() -> None:
                     bytes_done=int(it.get("bytes_done") or 0),
                     bytes_total=int(it.get("bytes_total") or 0),
                     error=str(it.get("error") or ""),
+                    upgrade=bool(it.get("upgrade")),
                 )
                 for it in raw.get("items") or []
             ]
@@ -228,6 +230,7 @@ class SettingsBody(BaseModel):
     auto_scan_days: Optional[int] = None
     auto_scan_limit: Optional[int] = None
     auto_scan_mode: Optional[str] = None
+    auto_upgrade_quality: Optional[bool] = None
 
 
 class LocalStatusBody(BaseModel):
@@ -368,6 +371,8 @@ async def set_settings(body: SettingsBody) -> dict[str, Any]:
     if body.auto_scan_mode is not None:
         mode = str(body.auto_scan_mode).strip().lower()
         patch["auto_scan_mode"] = mode if mode in {"new", "backfill"} else "new"
+    if body.auto_upgrade_quality is not None:
+        patch["auto_upgrade_quality"] = bool(body.auto_upgrade_quality)
     if patch:
         persist.save(patch)
     return await get_settings()
@@ -963,6 +968,18 @@ async def run_auto_scan(
             if limit > 0:
                 pending = pending[:limit]
 
+            upgrade_eps: list[Episode] = []
+            if st.get("auto_upgrade_quality"):
+                for ep, row in candidates:
+                    lp = row.get("local_path")
+                    if not (row.get("downloaded") and lp):
+                        continue
+                    try:
+                        if is_low_quality(Path(lp), ep):
+                            upgrade_eps.append(ep)
+                    except Exception:
+                        continue
+
             persist.upsert_show(
                 {
                     **show,
@@ -979,14 +996,16 @@ async def run_auto_scan(
                 },
                 subscribed=True,
             )
-            if not pending:
+            if not pending and not upgrade_eps:
                 continue
             job_id = uuid.uuid4().hex[:12]
+            items = [DownloadItem(episode=ep) for ep in pending]
+            items += [DownloadItem(episode=ep, upgrade=True) for ep in upgrade_eps]
             job = DownloadJob(
                 id=job_id,
                 show_name=name,
                 out_dir=str(out_path.resolve()),
-                items=[DownloadItem(episode=ep) for ep in pending],
+                items=items,
                 artwork=resolved.artwork or show.get("artwork") or "",
             )
             async with _jobs_lock:

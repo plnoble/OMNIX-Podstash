@@ -112,6 +112,10 @@
               <option value="backfill">补齐所有缺失</option>
             </select>
             <button id="btnAutoScanNow" class="btn">立即扫描一次</button>
+            <label class="check" style="margin-top: 10px">
+              <input type="checkbox" id="autoUpgradeQuality" />
+              检测到低码率文件时自动下载高质量替换（先校验新文件完整才删旧的）
+            </label>
           </div>
           <div class="muted" id="autoScanMeta" style="margin-top: 8px"></div>
         </div>
@@ -290,6 +294,6 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=0.4.2"></script>
+    <script src="/static/app.js?v=0.4.6"></script>
   </body>
 </html>

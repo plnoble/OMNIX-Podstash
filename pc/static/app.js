@@ -88,6 +88,7 @@ function applySettings(s) {
   $("autoScanDays").value = String(s.auto_scan_days || 7);
   $("autoScanLimit").value = String(s.auto_scan_limit ?? 30);
   if ($("autoScanMode")) $("autoScanMode").value = s.auto_scan_mode || "new";
+  if ($("autoUpgradeQuality")) $("autoUpgradeQuality").checked = !!s.auto_upgrade_quality;
   state.libraryLabel = s.library_label || "";
   const verEl = $("appVersion");
   if (verEl && s.version) {
@@ -172,6 +173,7 @@ async function saveSettings() {
         auto_scan_days: Number($("autoScanDays").value || 7),
         auto_scan_limit: Number($("autoScanLimit").value),
         auto_scan_mode: $("autoScanMode") ? $("autoScanMode").value : "new",
+        auto_upgrade_quality: $("autoUpgradeQuality") ? $("autoUpgradeQuality").checked : false,
       }),
     });
     applySettings(s);
@@ -1114,6 +1116,7 @@ function bind() {
   $("autoScanDays").addEventListener("change", saveSettings);
   $("autoScanLimit").addEventListener("change", saveSettings);
   $("autoScanMode")?.addEventListener("change", saveSettings);
+  $("autoUpgradeQuality")?.addEventListener("change", saveSettings);
   $("btnAutoScanNow").addEventListener("click", runAutoScanNow);
   $("btnContentSearch").addEventListener("click", doContentSearch);
   $("contentSearchInput").addEventListener("keydown", (e) => {

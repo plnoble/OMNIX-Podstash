@@ -23,6 +23,7 @@ _DEFAULTS: dict[str, Any] = {
     "auto_scan_days": 7,
     "auto_scan_limit": 30,
     "auto_scan_mode": "new",
+    "auto_upgrade_quality": False,
     "last_auto_scan": 0,
     "last_auto_scan_message": "",
 }
@@ -131,6 +132,11 @@ def _apply_env(data: dict[str, Any], *, first_boot: bool) -> None:
     limit = (os.environ.get("PODSTASH_AUTO_SCAN_LIMIT") or "").strip()
     if limit.isdigit():
         data["auto_scan_limit"] = max(0, min(int(limit), 5000))
+    upgrade = (os.environ.get("PODSTASH_AUTO_UPGRADE_QUALITY") or "").strip().lower()
+    if upgrade in {"1", "true", "yes", "on"}:
+        data["auto_upgrade_quality"] = True
+    elif upgrade in {"0", "false", "no", "off"}:
+        data["auto_upgrade_quality"] = False
 
 
 def _migrate_from_state_json() -> None:
@@ -268,6 +274,7 @@ def public_settings() -> dict[str, Any]:
         "auto_scan_days": int(s.get("auto_scan_days") or 7),
         "auto_scan_limit": int(s.get("auto_scan_limit") or 0),
         "auto_scan_mode": str(s.get("auto_scan_mode") or "new"),
+        "auto_upgrade_quality": bool(s.get("auto_upgrade_quality")),
         "last_auto_scan": int(s.get("last_auto_scan") or 0),
         "last_auto_scan_message": str(s.get("last_auto_scan_message") or ""),
         "subscribed_count": len(shows),
