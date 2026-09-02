@@ -204,7 +204,7 @@ def upsert_show_record(rec: dict[str, Any]) -> None:
                   updated_at=excluded.updated_at
                 """,
                 (
-                    rec.get("id") or "",
+                    rec.get("id") or rec.get("feed_url") or rec.get("name") or "",
                     rec.get("name") or "Podcast",
                     rec.get("author") or "",
                     rec.get("artwork") or "",
@@ -224,6 +224,20 @@ def delete_show(key: str) -> None:
     with _lock:
         with _db() as db:
             db.execute("DELETE FROM shows WHERE id = ?", (key,))
+
+
+def rename_show(old_id: str, new_id: str) -> None:
+    """Give a show row a new primary key (backfilling an empty/inconsistent id)."""
+    new_id = (new_id or "").strip()
+    if not new_id or old_id == new_id:
+        return
+    with _lock:
+        with _db() as db:
+            db.execute(
+                "UPDATE episodes SET show_id = ? WHERE show_id = ?",
+                (new_id, old_id),
+            )
+            db.execute("UPDATE shows SET id = ? WHERE id = ?", (new_id, old_id))
 
 
 def reparent_episodes(from_key: str, to_key: str) -> None:

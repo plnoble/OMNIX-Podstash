@@ -81,7 +81,7 @@ def canonical_key(show: dict[str, Any] | Show) -> str:
 
 def _normalize_show(show: dict[str, Any]) -> dict[str, Any]:
     return {
-        "id": str(show.get("id") or ""),
+        "id": str(show.get("id") or show.get("feed_url") or show.get("name") or ""),
         "name": str(show.get("name") or "Podcast"),
         "author": str(show.get("author") or ""),
         "artwork": str(show.get("artwork") or ""),
@@ -159,6 +159,29 @@ def _migrate_from_state_json() -> None:
         pass
 
 
+def _repair_show_ids() -> None:
+    """Backfill empty/inconsistent show ids so every row's PK equals its canonical key.
+
+    Historical bug: RSS shows were stored with ``id = ""`` while the auto-scan
+    wrote the same show again with ``id = feed_url``, producing two rows that
+    share a name and feed_url. Collapse those and re-key by ``feed_url``/``name``.
+    """
+    for s in store.list_shows():
+        rid = str(s.get("id") or "").strip()
+        canon = show_key(s)
+        if not canon:
+            continue
+        if rid and rid == canon:
+            continue
+        existing = store.get_show(canon)
+        if existing:
+            # This row duplicates the canonical one: fold episodes over, drop it.
+            store.reparent_episodes(show_key(s), show_key(existing))
+            store.delete_show(rid)
+        else:
+            store.rename_show(rid, canon)
+
+
 def _dedupe_shows() -> None:
     """Merge shows that share the same name (e.g. Apple vs 小宇宙/喜马拉雅 entry)."""
     shows = store.list_shows()
@@ -167,17 +190,23 @@ def _dedupe_shows() -> None:
         nk = _name_key(s.get("name") or "")
         if not nk:
             continue
-        key = show_key(s)
-        keep = seen.get(nk)
-        if keep is None:
-            seen[nk] = key
+        rid = str(s.get("id") or "").strip()
+        if not rid:
             continue
-        if keep == key:
+        keep_rid = seen.get(nk)
+        if keep_rid is None:
+            seen[nk] = rid
+            continue
+        if keep_rid == rid:
+            continue
+        keep = store.get_show(keep_rid)
+        if not keep:
+            seen[nk] = rid
             continue
         # Merge the duplicate into the kept show, then drop the duplicate row.
         try:
-            store.reparent_episodes(key, keep)
-            store.delete_show(key)
+            store.reparent_episodes(show_key(s), show_key(keep))
+            store.delete_show(rid)
         except Exception:
             pass
 
@@ -191,6 +220,7 @@ def load() -> dict[str, Any]:
     first_boot = (not had_db_settings) and (not path.exists())
     if not had_db_settings and path.exists():
         _migrate_from_state_json()
+    _repair_show_ids()
     _dedupe_shows()
 
     data = _blank_state()

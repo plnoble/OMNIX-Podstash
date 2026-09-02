@@ -1,7 +1,7 @@
 {
-  "version": "0.4.2",
-  "versionCode": 8,
+  "version": "0.4.3",
+  "versionCode": 9,
   "minSdk": 26,
-  "notes": "新增：界面内「诊断」按钮（一键生成识别诊断并可复制）；修复加载提速、下载进度、同名去重、补写标签等。",
+  "notes": "修复：同名节目重复关注（数据库主键 bug，如两个《知行小酒馆》）；修复 RSS 节目主键为空导致互相覆盖；启动时自动合并重复条目。",
   "repo": "plnoble/OMNIX-Podstash"
 }
