@@ -1,7 +1,7 @@
 {
-  "version": "0.4.0",
-  "versionCode": 6,
+  "version": "0.4.1",
+  "versionCode": 7,
   "minSdk": 26,
-  "notes": "Docker 主线：阿里云 ACR 一键更新、SQLite 数据层、登录保护、shownotes、ID3 标签、只下新集开关、单集忽略。",
+  "notes": "修复：节目加载提速、下载进度可见、下载卡死自动重试、同名节目去重、已有文件识别（权限修复）、补写标签按钮。",
   "repo": "plnoble/OMNIX-Podstash"
 }
