@@ -73,6 +73,16 @@ CREATE TABLE IF NOT EXISTS job_items (
   error       TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (job_id, idx)
 );
+
+CREATE TABLE IF NOT EXISTS events (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts        REAL NOT NULL,
+  kind      TEXT NOT NULL,
+  show_name TEXT NOT NULL DEFAULT '',
+  count     INTEGER NOT NULL DEFAULT 0,
+  detail    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 """
 
 _lock = threading.RLock()
@@ -499,4 +509,45 @@ def delete_job(job_id: str) -> None:
     with _lock:
         with _db() as db:
             db.execute("DELETE FROM job_items WHERE job_id = ?", (job_id,))
-            db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+
+
+# ------------------------------------------------------------------ events
+
+def log_event(kind: str, show_name: str = "", count: int = 0, detail: str = "") -> None:
+    with _lock:
+        with _db() as db:
+            db.execute(
+                "INSERT INTO events(ts, kind, show_name, count, detail) "
+                "VALUES(?, ?, ?, ?, ?)",
+                (time.time(), kind or "info", show_name or "", int(count or 0), detail or ""),
+            )
+
+
+def list_events(limit: int = 100) -> list[dict[str, Any]]:
+    with _lock:
+        with _db() as db:
+            rows = db.execute(
+                "SELECT * FROM events ORDER BY id DESC LIMIT ?",
+                (max(1, min(int(limit), 2000)),),
+            ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "ts": float(r["ts"]),
+            "kind": r["kind"],
+            "show_name": r["show_name"],
+            "count": int(r["count"] or 0),
+            "detail": r["detail"],
+        }
+        for r in rows
+    ]
+
+
+def prune_events(keep: int = 500) -> None:
+    with _lock:
+        with _db() as db:
+            db.execute(
+                "DELETE FROM events WHERE id NOT IN "
+                "(SELECT id FROM events ORDER BY id DESC LIMIT ?)",
+                (max(1, int(keep)),),
+            )

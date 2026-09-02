@@ -125,6 +125,7 @@
         <div class="row" style="justify-content: space-between; margin-bottom: 10px">
           <strong>已关注</strong>
           <div class="row" style="gap: 6px">
+            <button id="btnEvents" class="btn" title="查看下载/升级/扫描的操作记录">日志</button>
             <button id="btnImportOpml" class="btn">导入 OPML</button>
             <button id="btnExportOpml" class="btn">导出 OPML</button>
             <input id="opmlFile" type="file" accept=".opml,.xml,text/xml" hidden />
@@ -222,6 +223,9 @@
           <button id="btnAll" class="btn">全选</button>
           <button id="btnUndownloaded" class="btn">只选未下载</button>
           <button id="btnScanShow" class="btn">检测已有文件</button>
+          <button id="btnUpgradeQuality" class="btn" title="把这一档的低码率文件重新下载为高质量并替换（先校验新文件完整才删旧的）" disabled>
+            升级低质量
+          </button>
           <button id="btnRetag" class="btn" title="给已下载的文件补写标题/封面/shownotes 等内嵌标签">
             补写标签
           </button>
@@ -294,6 +298,19 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=0.4.6"></script>
+    <div id="eventsModal" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:1000">
+      <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:16px;width:min(92vw,640px);max-height:82vh;display:flex;flex-direction:column">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <strong>操作日志</strong>
+          <span id="eventsMeta" class="muted" style="font-size:12px"></span>
+          <div style="flex:1"></div>
+          <button id="btnEventsRefresh" class="btn btn-mini">刷新</button>
+          <button id="btnEventsClose" class="btn btn-mini">关闭</button>
+        </div>
+        <div id="eventsList" style="overflow:auto;flex:1;font-size:13px;line-height:1.7"></div>
+      </div>
+    </div>
+
+    <script src="/static/app.js?v=0.4.7"></script>
   </body>
 </html>

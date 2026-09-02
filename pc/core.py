@@ -604,6 +604,7 @@ def mark_episodes_local(
                     "partial": False,
                     "local_path": "",
                     "local_size": 0,
+                    "low_quality": False,
                 }
             )
             continue
@@ -617,14 +618,20 @@ def mark_episodes_local(
             expected_duration=getattr(ep, "duration", "") or "",
             lenient=lenient,
         )
+        low = False
         if complete:
             done += 1
+            try:
+                low = is_low_quality(path, ep)
+            except Exception:
+                low = False
         rows.append(
             {
                 "downloaded": complete,
                 "partial": (not complete) and size > 0,
                 "local_path": str(path),
                 "local_size": size,
+                "low_quality": low,
             }
         )
     return rows, done
@@ -1766,11 +1773,14 @@ async def run_download_job(
         return
     failed = sum(1 for i in job.items if i.status == "error")
     skipped = sum(1 for i in job.items if i.status == "skipped")
-    downloaded = sum(1 for i in job.items if i.status == "done")
+    downloaded = sum(1 for i in job.items if i.status == "done" and not i.upgrade)
+    upgraded = sum(1 for i in job.items if i.status == "done" and i.upgrade)
     job.status = "error" if failed and failed == len(job.items) else "done"
     parts: list[str] = []
     if downloaded:
         parts.append(f"新下 {downloaded}")
+    if upgraded:
+        parts.append(f"升级 {upgraded}")
     if skipped:
         parts.append(f"已存在 {skipped}")
     if failed:

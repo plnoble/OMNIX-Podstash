@@ -165,13 +165,15 @@ def _migrate_from_state_json() -> None:
         pass
 
 
-def _repair_show_ids() -> None:
+def _repair_show_ids() -> int:
     """Backfill empty/inconsistent show ids so every row's PK equals its canonical key.
 
     Historical bug: RSS shows were stored with ``id = ""`` while the auto-scan
     wrote the same show again with ``id = feed_url``, producing two rows that
     share a name and feed_url. Collapse those and re-key by ``feed_url``/``name``.
+    Returns the number of duplicate rows merged away.
     """
+    merged = 0
     for s in store.list_shows():
         rid = str(s.get("id") or "").strip()
         canon = show_key(s)
@@ -184,14 +186,17 @@ def _repair_show_ids() -> None:
             # This row duplicates the canonical one: fold episodes over, drop it.
             store.reparent_episodes(show_key(s), show_key(existing))
             store.delete_show(rid)
+            merged += 1
         else:
             store.rename_show(rid, canon)
+    return merged
 
 
-def _dedupe_shows() -> None:
+def _dedupe_shows() -> int:
     """Merge shows that share the same name (e.g. Apple vs 小宇宙/喜马拉雅 entry)."""
     shows = store.list_shows()
     seen: dict[str, str] = {}
+    merged = 0
     for s in shows:
         nk = _name_key(s.get("name") or "")
         if not nk:
@@ -213,8 +218,10 @@ def _dedupe_shows() -> None:
         try:
             store.reparent_episodes(show_key(s), show_key(keep))
             store.delete_show(rid)
+            merged += 1
         except Exception:
             pass
+    return merged
 
 
 def load() -> dict[str, Any]:
@@ -226,8 +233,12 @@ def load() -> dict[str, Any]:
     first_boot = (not had_db_settings) and (not path.exists())
     if not had_db_settings and path.exists():
         _migrate_from_state_json()
-    _repair_show_ids()
-    _dedupe_shows()
+    repair_n = _repair_show_ids()
+    dedupe_n = _dedupe_shows()
+    if repair_n or dedupe_n:
+        total = repair_n + dedupe_n
+        store.log_event("dedupe", "", total, f"合并重复节目 {total} 条")
+        store.prune_events(500)
 
     data = _blank_state()
     data.update(store.get_settings())

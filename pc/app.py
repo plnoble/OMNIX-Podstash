@@ -239,6 +239,12 @@ class LocalStatusBody(BaseModel):
     episodes: list[dict[str, Any]]
 
 
+class UpgradeQualityBody(BaseModel):
+    source: str = ""
+    show_name: str = ""
+    out_dir: Optional[str] = None
+
+
 class SubscribeBody(BaseModel):
     id: str = ""
     name: str = ""
@@ -348,6 +354,11 @@ async def get_settings() -> dict[str, Any]:
     data = persist.public_settings()
     data["version"] = app_version()
     return data
+
+
+@app.get("/api/events")
+async def api_events(limit: int = 200) -> dict[str, Any]:
+    return {"events": store.list_events(limit)}
 
 
 @app.post("/api/settings")
@@ -655,6 +666,50 @@ async def api_local_status(body: LocalStatusBody) -> dict[str, Any]:
     }
 
 
+@app.post("/api/upgrade-quality")
+async def api_upgrade_quality(body: UpgradeQualityBody) -> dict[str, Any]:
+    """Queue an upgrade job replacing this show's low-bitrate files with high quality."""
+    src = (body.source or body.show_name or "").strip()
+    if not src:
+        raise HTTPException(400, "缺少节目来源")
+    try:
+        resolved, episodes = await resolve_source(src)
+    except Exception as e:
+        raise HTTPException(502, f"解析节目失败: {e}") from e
+    name = resolved.name or body.show_name or "Podcast"
+    out_path = Path(body.out_dir or persist.get()["out_dir"]).expanduser()
+    rows, _ = mark_episodes_local(out_path, name, episodes, lenient=True)
+    upgrade_eps = [
+        ep
+        for ep, row in zip(episodes, rows)
+        if row.get("downloaded") and row.get("local_path") and row.get("low_quality")
+    ]
+    if not upgrade_eps:
+        return {"ok": True, "queued": 0, "message": "没有检测到低质量文件"}
+    job_id = uuid.uuid4().hex[:12]
+    job = DownloadJob(
+        id=job_id,
+        show_name=name,
+        out_dir=str(out_path.resolve()),
+        items=[DownloadItem(episode=ep, upgrade=True) for ep in upgrade_eps],
+        artwork=resolved.artwork or "",
+    )
+    async with _jobs_lock:
+        _jobs[job_id] = job
+    _persist_job(job)
+    concurrency = int(persist.get().get("concurrency") or 32)
+
+    async def _run() -> None:
+        await _run_job_with_retries(job, concurrency)
+        upg = sum(1 for i in job.items if i.status == "done" and i.upgrade)
+        if upg:
+            store.log_event("upgrade", name, upg)
+        store.prune_events(500)
+
+    asyncio.create_task(_run())
+    return {"ok": True, "queued": len(upgrade_eps), "job_id": job_id, "job": job.to_dict()}
+
+
 @app.get("/api/scan-debug")
 async def api_scan_debug(source: str, out_dir: str = "") -> dict[str, Any]:
     """诊断「检测已有文件」为什么没识别到本地音频：列出候选目录、文件与每集最佳匹配分。"""
@@ -915,6 +970,8 @@ async def run_auto_scan(
         mode = str(st.get("auto_scan_mode") or "new")
         queued = 0
         skipped_existing = 0
+        downloaded_total = 0
+        upgraded_total = 0
         failures: list[str] = []
         total = len(target_shows)
         for i, show in enumerate(target_shows, start=1):
@@ -1011,10 +1068,20 @@ async def run_auto_scan(
             async with _jobs_lock:
                 _jobs[job_id] = job
             await _run_job_with_retries(job, concurrency)
+            new_n = sum(1 for i in job.items if i.status == "done" and not i.upgrade)
+            upg_n = sum(1 for i in job.items if i.status == "done" and i.upgrade)
+            downloaded_total += new_n
+            upgraded_total += upg_n
             queued += sum(1 for i in job.items if i.status in ("done", "skipped", "error"))
+            if new_n:
+                store.log_event("download", name, new_n)
+            if upg_n:
+                store.log_event("upgrade", name, upg_n)
         parts = [f"扫描{len(target_shows)}档"]
-        if queued:
-            parts.append(f"处理 {queued} 集")
+        if downloaded_total:
+            parts.append(f"新下 {downloaded_total}")
+        if upgraded_total:
+            parts.append(f"升级 {upgraded_total}")
         if skipped_existing:
             parts.append(f"本地已有 {skipped_existing}")
         if failures:
@@ -1022,12 +1089,16 @@ async def run_auto_scan(
         msg = " · ".join(parts)
         if failures:
             msg += " — " + "; ".join(failures[:5])
+        store.log_event("scan", "", 0, msg)
+        store.prune_events(500)
         persist.save({"last_auto_scan": int(time.time()), "last_auto_scan_message": msg})
         _log.info("auto-scan (%s): %s", reason, msg)
         return {
             "ok": True,
             "message": msg,
             "queued": queued,
+            "downloaded": downloaded_total,
+            "upgraded": upgraded_total,
             "local_existing": skipped_existing,
             "failures": failures,
             "reason": reason,

@@ -528,15 +528,22 @@ function renderEpisodes() {
 
   $("showName").textContent = state.show.name || "未命名节目";
   const localN = state.episodes.filter((e) => e.downloaded).length;
+  const lowN = state.episodes.filter((e) => e.downloaded && e.low_quality).length;
   $("showMeta").textContent = [
     state.show.author,
     `${state.episodes.length} 集`,
     localN ? `本地已有 ${localN}` : "",
+    lowN ? `低质量 ${lowN}` : "",
     state.show.subscribed ? "已关注" : "",
     state.show.feed_url ? "可批量下载" : "",
   ]
     .filter(Boolean)
     .join(" · ");
+  const upBtn = $("btnUpgradeQuality");
+  if (upBtn) {
+    upBtn.textContent = lowN ? `升级低质量 (${lowN})` : "升级低质量";
+    upBtn.disabled = lowN === 0;
+  }
   const subBtn = $("btnSubscribe");
   if (subBtn) {
     subBtn.textContent = state.show.subscribed ? "已关注" : "关注";
@@ -567,8 +574,13 @@ function renderEpisodes() {
         const size = e.size ? fmtBytes(e.size) : e.local_size ? fmtBytes(e.local_size) : "";
         const rowClass = e.downloaded ? "ep-item downloaded" : "ep-item";
         let badge = `<span class="badge">#${e.index}</span>`;
-        if (e.downloaded) badge = `<span class="badge badge-ok">已下载</span>`;
-        else if (e.partial) badge = `<span class="badge badge-warn">未下完</span>`;
+        if (e.downloaded) {
+          badge = `<span class="badge badge-ok">已下载</span>${
+            e.low_quality ? ` <span class="badge badge-warn">低质量</span>` : ""
+          }`;
+        } else if (e.partial) {
+          badge = `<span class="badge badge-warn">未下完</span>`;
+        }
         const descText = htmlToText(e.description || "");
         let descHtml = "";
         if (descText) {
@@ -777,6 +789,93 @@ function copyDiag() {
     }
     document.body.removeChild(ta);
   }
+}
+
+async function upgradeQuality() {
+  if (!state.show || !state.episodes.length) {
+    toast("请先加载一档节目");
+    return;
+  }
+  const btn = $("btnUpgradeQuality");
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.innerHTML = '<span class="spinner"></span> 检测中';
+  try {
+    const src = state.show.feed_url || state.show.id || state.show.name;
+    const data = await api("/api/upgrade-quality", {
+      method: "POST",
+      body: JSON.stringify({
+        source: src,
+        show_name: state.show.name,
+        out_dir: $("outDir").value.trim() || undefined,
+      }),
+    });
+    if (!data.queued) {
+      toast(data.message || "没有检测到低质量文件");
+      return;
+    }
+    state.jobId = data.job_id;
+    state.jobStartedAt = Date.now();
+    $("progressSection").classList.remove("hidden");
+    $("jobTitle").textContent = `升级低质量：${state.show.name}`;
+    $("progressSection").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    pollJob();
+    toast(`开始升级 ${data.queued} 集低质量`);
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+async function openEvents() {
+  $("eventsModal").classList.remove("hidden");
+  await refreshEvents();
+}
+
+function closeEvents() {
+  $("eventsModal").classList.add("hidden");
+}
+
+async function refreshEvents() {
+  try {
+    const data = await api("/api/events?limit=200");
+    renderEvents(data.events || []);
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+function fmtEventTime(ts) {
+  const d = new Date(ts * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function renderEvents(events) {
+  $("eventsMeta").textContent = `最近 ${events.length} 条`;
+  const box = $("eventsList");
+  if (!events.length) {
+    box.innerHTML = `<div class="muted">还没有操作记录。</div>`;
+    return;
+  }
+  const kindLabel = {
+    download: "新下载",
+    upgrade: "升级低质量",
+    scan: "扫描",
+    dedupe: "去重",
+    info: "信息",
+  };
+  box.innerHTML = events
+    .map((ev) => {
+      const kind = kindLabel[ev.kind] || ev.kind;
+      const who = ev.show_name ? escapeHtml(ev.show_name) : "";
+      const count = ev.count ? ` ${ev.count} 集` : "";
+      const detail = ev.detail ? ` · ${escapeHtml(ev.detail)}` : "";
+      return `<div><span class="muted">${fmtEventTime(ev.ts)}</span> <b>${kind}</b> ${who}${count}${detail}</div>`;
+    })
+    .join("");
 }
 
 async function retagFiles() {
@@ -1143,6 +1242,13 @@ function bind() {
   $("btnDiagCopy").addEventListener("click", copyDiag);
   $("diagModal").addEventListener("click", (ev) => {
     if (ev.target === $("diagModal")) closeDiag();
+  });
+  $("btnUpgradeQuality")?.addEventListener("click", upgradeQuality);
+  $("btnEvents")?.addEventListener("click", openEvents);
+  $("btnEventsClose")?.addEventListener("click", closeEvents);
+  $("btnEventsRefresh")?.addEventListener("click", refreshEvents);
+  $("eventsModal")?.addEventListener("click", (ev) => {
+    if (ev.target === $("eventsModal")) closeEvents();
   });
   $("btnPerShowSave")?.addEventListener("click", savePerShowSettings);
   $("btnDismissOnboard")?.addEventListener("click", () => {
