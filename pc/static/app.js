@@ -731,6 +731,43 @@ async function scanExisting(notify) {
   }
 }
 
+async function retagFiles() {
+  if (!state.show || !state.episodes.length) {
+    toast("请先加载一档节目");
+    return;
+  }
+  const done = state.episodes.filter((e) => e.downloaded);
+  if (!done.length) {
+    toast("没有识别到已下载的文件。先点「检测已有文件」，成功标记后再补写标签。");
+    return;
+  }
+  const btn = $("btnRetag");
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.innerHTML = '<span class="spinner"></span> 补写中';
+  setWorkBanner(`正在给 ${done.length} 个已有文件补写标签…`);
+  try {
+    const data = await api("/api/retag", {
+      method: "POST",
+      body: JSON.stringify({
+        show_name: state.show.name,
+        author: state.show.author,
+        artwork: state.show.artwork,
+        out_dir: $("outDir").value.trim() || undefined,
+        episodes: done,
+      }),
+    });
+    toast(`已为 ${data.tagged || 0} 个文件补写标签`);
+    setWorkBanner("");
+  } catch (e) {
+    setWorkBanner("");
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
 async function startDownload() {
   if (!state.show || !state.selected.size) {
     toast("请先选择要下载的单集");
@@ -1051,6 +1088,7 @@ function bind() {
   $("btnExportOpml").addEventListener("click", exportOpml);
   $("btnScanLibrary").addEventListener("click", () => scanExisting(true));
   $("btnScanShow").addEventListener("click", () => scanExisting(true));
+  $("btnRetag").addEventListener("click", retagFiles);
   $("btnPerShowSave")?.addEventListener("click", savePerShowSettings);
   $("btnDismissOnboard")?.addEventListener("click", () => {
     localStorage.setItem("podstash-onboard", "1");

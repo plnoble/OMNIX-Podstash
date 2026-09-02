@@ -19,22 +19,31 @@ def _num(value: str | None, default: int) -> int:
 
 
 def _chown_tree(path: str, uid: int, gid: int) -> None:
-    try:
-        st = os.stat(path)
-        if st.st_uid == uid and st.st_gid == gid:
-            return
-    except OSError:
+    """Recursively chown entries whose ownership differs from uid/gid.
+
+    Always walks the tree: the top-level dir may already be owned by uid/gid
+    while the contents (e.g. files copied in later or made by another tool)
+    are not. Only entries that actually differ are chowned, so re-running is
+    cheap on an already-fixed library.
+    """
+    if not path or not os.path.isdir(path):
         return
+    try:
+        os.chown(path, uid, gid)
+    except OSError:
+        pass
     for root, dirs, files in os.walk(path):
         for name in dirs + files:
+            full = os.path.join(root, name)
             try:
-                os.chown(os.path.join(root, name), uid, gid)
+                st = os.lstat(full)
             except OSError:
-                pass
-        try:
-            os.chown(root, uid, gid)
-        except OSError:
-            pass
+                continue
+            if st.st_uid != uid or st.st_gid != gid:
+                try:
+                    os.chown(full, uid, gid)
+                except OSError:
+                    pass
 
 
 def main() -> None:

@@ -37,6 +37,9 @@ from core import (
     DownloadItem,
     DownloadJob,
     Episode,
+    USER_AGENT,
+    fetch_cover,
+    find_existing_in_library,
     iter_audio_files,
     iter_show_folders,
     mark_episodes_local,
@@ -44,6 +47,7 @@ from core import (
     resolve_source,
     run_download_job,
     score_title_against_filename,
+    write_media_tags,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -240,6 +244,14 @@ class SubscribeBody(BaseModel):
     feed_url: str = ""
     episode_count: int = 0
     subscribed: bool = True
+
+
+class RetagBody(BaseModel):
+    show_name: str = ""
+    author: str = ""
+    artwork: str = ""
+    out_dir: Optional[str] = None
+    episodes: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class OpmlImportBody(BaseModel):
@@ -687,6 +699,60 @@ async def api_scan_debug(source: str, out_dir: str = "") -> dict[str, Any]:
         "files": files[:300],
         "episodes": eps_debug,
     }
+
+
+@app.post("/api/retag")
+async def api_retag(body: RetagBody) -> dict[str, Any]:
+    """给已有音频文件补写 ID3/MP4 标签（标题/作者/专辑/音轨/封面 + shownotes 说明）。"""
+    out_dir = Path(body.out_dir or persist.get()["out_dir"]).expanduser()
+    raw_list = body.episodes
+    eps = []
+    for raw in raw_list:
+        eps.append(
+            Episode(
+                index=int(raw.get("index") or 0),
+                title=str(raw.get("title") or "Untitled"),
+                audio_url=str(raw.get("audio_url") or raw.get("url") or ""),
+                published=str(raw.get("published") or raw.get("date") or ""),
+                duration=str(raw.get("duration") or ""),
+                guid=str(raw.get("guid") or ""),
+                size=int(raw.get("size") or 0),
+                description=str(raw.get("description") or ""),
+            )
+        )
+
+    cover = None
+    try:
+        async with httpx.AsyncClient(
+            headers={"User-Agent": USER_AGENT, "Accept": "*/*"},
+            follow_redirects=True,
+            timeout=httpx.Timeout(15.0, connect=10.0),
+        ) as client:
+            cover = await fetch_cover(client, body.artwork)
+    except Exception:
+        cover = None
+
+    tagged = 0
+    checked = 0
+    for i, ep in enumerate(eps):
+        lp = str(raw_list[i].get("local_path") or "").strip()
+        path = Path(lp) if lp else None
+        if path is None or not path.exists():
+            path = find_existing_in_library(out_dir, body.show_name, ep)
+        if not path or not path.exists():
+            continue
+        checked += 1
+        write_media_tags(
+            path,
+            title=ep.title,
+            artist=body.author or body.show_name or "Podcast",
+            album=body.show_name or "Podcast",
+            track=ep.index + 1,
+            cover=cover,
+        )
+        tagged += 1
+
+    return {"tagged": tagged, "checked": checked, "total": len(eps)}
 
 
 @app.post("/api/download")
