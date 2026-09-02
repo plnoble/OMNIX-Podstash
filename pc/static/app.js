@@ -731,6 +731,52 @@ async function scanExisting(notify) {
   }
 }
 
+async function openDiag() {
+  if (!state.show) {
+    toast("请先加载一档节目");
+    return;
+  }
+  const src = state.show.feed_url || state.show.id || state.show.name;
+  const btn = $("btnDiag");
+  btn.disabled = true;
+  setWorkBanner("正在生成识别诊断…");
+  try {
+    const data = await api(`/api/scan-debug?source=${encodeURIComponent(src)}`);
+    $("diagText").textContent = JSON.stringify(data, null, 2);
+    $("diagModal").classList.remove("hidden");
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+    setWorkBanner("");
+  }
+}
+
+function closeDiag() {
+  $("diagModal").classList.add("hidden");
+}
+
+function copyDiag() {
+  const t = $("diagText").textContent || "";
+  const done = () => toast("已复制，粘贴给我即可");
+  const fail = () => toast("复制失败，请手动全选复制");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(t).then(done).catch(fail);
+  } else {
+    const ta = document.createElement("textarea");
+    ta.value = t;
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand("copy");
+      done();
+    } catch (err) {
+      fail();
+    }
+    document.body.removeChild(ta);
+  }
+}
+
 async function retagFiles() {
   if (!state.show || !state.episodes.length) {
     toast("请先加载一档节目");
@@ -1089,6 +1135,12 @@ function bind() {
   $("btnScanLibrary").addEventListener("click", () => scanExisting(true));
   $("btnScanShow").addEventListener("click", () => scanExisting(true));
   $("btnRetag").addEventListener("click", retagFiles);
+  $("btnDiag").addEventListener("click", openDiag);
+  $("btnDiagClose").addEventListener("click", closeDiag);
+  $("btnDiagCopy").addEventListener("click", copyDiag);
+  $("diagModal").addEventListener("click", (ev) => {
+    if (ev.target === $("diagModal")) closeDiag();
+  });
   $("btnPerShowSave")?.addEventListener("click", savePerShowSettings);
   $("btnDismissOnboard")?.addEventListener("click", () => {
     localStorage.setItem("podstash-onboard", "1");

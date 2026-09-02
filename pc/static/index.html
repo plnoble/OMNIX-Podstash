@@ -221,6 +221,9 @@
           <button id="btnRetag" class="btn" title="给已下载的文件补写标题/封面/shownotes 等内嵌标签">
             补写标签
           </button>
+          <button id="btnDiag" class="btn" title="生成识别诊断（把内容复制给开发者）">
+            诊断
+          </button>
           <button id="btnNone" class="btn">清空</button>
           <button id="btnLatest10" class="btn">最新 10 集</button>
           <button id="btnLatest30" class="btn">最新 30 集</button>
@@ -274,6 +277,19 @@
     </div>
 
     <div id="toast" class="toast"></div>
-    <script src="/static/app.js?v=0.4.0"></script>
+
+    <div id="diagModal" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:1000">
+      <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:16px;width:min(92vw,760px);max-height:82vh;display:flex;flex-direction:column">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <strong>识别诊断 · 复制下面内容发给开发者</strong>
+          <div style="flex:1"></div>
+          <button id="btnDiagCopy" class="btn btn-mini">复制</button>
+          <button id="btnDiagClose" class="btn btn-mini">关闭</button>
+        </div>
+        <pre id="diagText" style="overflow:auto;flex:1;margin:0;padding:10px;background:var(--bg-soft);border-radius:6px;font-size:12px;white-space:pre-wrap;word-break:break-all"></pre>
+      </div>
+    </div>
+
+    <script src="/static/app.js?v=0.4.2"></script>
   </body>
 </html>
