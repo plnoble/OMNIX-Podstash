@@ -37,9 +37,13 @@ from core import (
     DownloadItem,
     DownloadJob,
     Episode,
+    iter_audio_files,
+    iter_show_folders,
     mark_episodes_local,
+    normalize_match_key,
     resolve_source,
     run_download_job,
+    score_title_against_filename,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -631,6 +635,57 @@ async def api_local_status(body: LocalStatusBody) -> dict[str, Any]:
         "out_dir": str(out_dir),
         "local_downloaded": local_done,
         "episodes": rows,
+    }
+
+
+@app.get("/api/scan-debug")
+async def api_scan_debug(source: str, out_dir: str = "") -> dict[str, Any]:
+    """诊断「检测已有文件」为什么没识别到本地音频：列出候选目录、文件与每集最佳匹配分。"""
+    src = (source or "").strip()
+    if not src:
+        raise HTTPException(400, "缺少 source（节目链接/ID）")
+    try:
+        show, episodes = await resolve_source(src)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(502, f"解析失败: {e}") from e
+
+    out_path = Path(out_dir or persist.get()["out_dir"]).expanduser()
+    folders = [str(f) for f in iter_show_folders(out_path, show.name)]
+    files: list[dict[str, Any]] = []
+    for fd in folders:
+        for p in iter_audio_files(Path(fd), extra_depth=1):
+            try:
+                sz = p.stat().st_size
+            except OSError:
+                sz = 0
+            files.append({"folder": fd, "name": p.name, "size": sz})
+
+    eps_debug = []
+    for ep in episodes[:40]:
+        best_score, best_name = 0, ""
+        for fd in folders:
+            for p in iter_audio_files(Path(fd), extra_depth=1):
+                sc = score_title_against_filename(ep.title, p.name, show.name)
+                if sc > best_score:
+                    best_score, best_name = sc, p.name
+        eps_debug.append(
+            {
+                "title": ep.title,
+                "normalized": normalize_match_key(ep.title),
+                "best_score": best_score,
+                "best_file": best_name,
+            }
+        )
+
+    return {
+        "show_name": show.name,
+        "show_name_normalized": normalize_match_key(show.name),
+        "out_dir": str(out_path),
+        "folders": folders,
+        "files": files[:300],
+        "episodes": eps_debug,
     }
 
 

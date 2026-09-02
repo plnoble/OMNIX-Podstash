@@ -63,6 +63,11 @@ def show_key(show: dict[str, Any] | Show) -> str:
     return str(show.get("id") or show.get("feed_url") or show.get("name") or "").strip()
 
 
+def _name_key(name: str) -> str:
+    """Collapse a show name for dedup (whitespace-insensitive, casefold)."""
+    return re.sub(r"\s+", "", (name or "")).casefold().strip()
+
+
 def _normalize_show(show: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(show.get("id") or ""),
@@ -143,6 +148,29 @@ def _migrate_from_state_json() -> None:
         pass
 
 
+def _dedupe_shows() -> None:
+    """Merge shows that share the same name (e.g. Apple vs 小宇宙/喜马拉雅 entry)."""
+    shows = store.list_shows()
+    seen: dict[str, str] = {}
+    for s in shows:
+        nk = _name_key(s.get("name") or "")
+        if not nk:
+            continue
+        key = show_key(s)
+        keep = seen.get(nk)
+        if keep is None:
+            seen[nk] = key
+            continue
+        if keep == key:
+            continue
+        # Merge the duplicate into the kept show, then drop the duplicate row.
+        try:
+            store.reparent_episodes(key, keep)
+            store.delete_show(key)
+        except Exception:
+            pass
+
+
 def load() -> dict[str, Any]:
     global _cache, _loaded
     store.configure(db_path())
@@ -152,6 +180,7 @@ def load() -> dict[str, Any]:
     first_boot = (not had_db_settings) and (not path.exists())
     if not had_db_settings and path.exists():
         _migrate_from_state_json()
+    _dedupe_shows()
 
     data = _blank_state()
     data.update(store.get_settings())
@@ -216,6 +245,15 @@ def upsert_show(show: dict[str, Any], *, subscribed: bool | None = None) -> dict
     if not key:
         raise ValueError("节目缺少 ID / RSS")
     rec = _normalize_show(show)
+    # 去重：同名节目已存在（例如 Apple 与小宇宙/喜马拉雅各加了一次）时合并到已有记录。
+    nk = _name_key(rec["name"])
+    if nk:
+        for s in store.list_shows():
+            if _name_key(s.get("name") or "") == nk and show_key(s) != key:
+                key = show_key(s)
+                rec["id"] = str(s.get("id") or rec["id"])
+                rec["feed_url"] = str(s.get("feed_url") or rec["feed_url"])
+                break
     old = store.get_show(key)
     if old:
         for k, v in rec.items():

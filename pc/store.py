@@ -226,6 +226,18 @@ def delete_show(key: str) -> None:
             db.execute("DELETE FROM shows WHERE id = ?", (key,))
 
 
+def reparent_episodes(from_key: str, to_key: str) -> None:
+    """Move episodes of a duplicate show onto the kept show (dedup by name)."""
+    if from_key == to_key or not from_key or not to_key:
+        return
+    with _lock:
+        with _db() as db:
+            db.execute(
+                "UPDATE episodes SET show_id = ? WHERE show_id = ?",
+                (to_key, from_key),
+            )
+
+
 # --------------------------------------------------------------- episodes
 
 def _episode_row(r: sqlite3.Row) -> dict[str, Any]:
