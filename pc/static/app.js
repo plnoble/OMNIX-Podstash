@@ -88,7 +88,6 @@ function applySettings(s) {
   $("autoScanDays").value = String(s.auto_scan_days || 7);
   $("autoScanLimit").value = String(s.auto_scan_limit ?? 30);
   if ($("autoScanMode")) $("autoScanMode").value = s.auto_scan_mode || "new";
-  if ($("autoUpgradeQuality")) $("autoUpgradeQuality").checked = !!s.auto_upgrade_quality;
   state.libraryLabel = s.library_label || "";
   const verEl = $("appVersion");
   if (verEl && s.version) {
@@ -173,7 +172,6 @@ async function saveSettings() {
         auto_scan_days: Number($("autoScanDays").value || 7),
         auto_scan_limit: Number($("autoScanLimit").value),
         auto_scan_mode: $("autoScanMode") ? $("autoScanMode").value : "new",
-        auto_upgrade_quality: $("autoUpgradeQuality") ? $("autoUpgradeQuality").checked : false,
       }),
     });
     applySettings(s);
@@ -528,22 +526,15 @@ function renderEpisodes() {
 
   $("showName").textContent = state.show.name || "未命名节目";
   const localN = state.episodes.filter((e) => e.downloaded).length;
-  const lowN = state.episodes.filter((e) => e.downloaded && e.low_quality).length;
   $("showMeta").textContent = [
     state.show.author,
     `${state.episodes.length} 集`,
     localN ? `本地已有 ${localN}` : "",
-    lowN ? `低质量 ${lowN}` : "",
     state.show.subscribed ? "已关注" : "",
     state.show.feed_url ? "可批量下载" : "",
   ]
     .filter(Boolean)
     .join(" · ");
-  const upBtn = $("btnUpgradeQuality");
-  if (upBtn) {
-    upBtn.textContent = lowN ? `升级低质量 (${lowN})` : "升级低质量";
-    upBtn.disabled = lowN === 0;
-  }
   const subBtn = $("btnSubscribe");
   if (subBtn) {
     subBtn.textContent = state.show.subscribed ? "已关注" : "关注";
@@ -575,9 +566,7 @@ function renderEpisodes() {
         const rowClass = e.downloaded ? "ep-item downloaded" : "ep-item";
         let badge = `<span class="badge">#${e.index}</span>`;
         if (e.downloaded) {
-          badge = `<span class="badge badge-ok">已下载</span>${
-            e.low_quality ? ` <span class="badge badge-warn">低质量</span>` : ""
-          }`;
+          badge = `<span class="badge badge-ok">已下载</span>`;
         } else if (e.partial) {
           badge = `<span class="badge badge-warn">未下完</span>`;
         }
@@ -788,44 +777,6 @@ function copyDiag() {
       fail();
     }
     document.body.removeChild(ta);
-  }
-}
-
-async function upgradeQuality() {
-  if (!state.show || !state.episodes.length) {
-    toast("请先加载一档节目");
-    return;
-  }
-  const btn = $("btnUpgradeQuality");
-  btn.disabled = true;
-  const old = btn.textContent;
-  btn.innerHTML = '<span class="spinner"></span> 检测中';
-  try {
-    const src = state.show.feed_url || state.show.id || state.show.name;
-    const data = await api("/api/upgrade-quality", {
-      method: "POST",
-      body: JSON.stringify({
-        source: src,
-        show_name: state.show.name,
-        out_dir: $("outDir").value.trim() || undefined,
-      }),
-    });
-    if (!data.queued) {
-      toast(data.message || "没有检测到低质量文件");
-      return;
-    }
-    state.jobId = data.job_id;
-    state.jobStartedAt = Date.now();
-    $("progressSection").classList.remove("hidden");
-    $("jobTitle").textContent = `升级低质量：${state.show.name}`;
-    $("progressSection").scrollIntoView({ behavior: "smooth", block: "nearest" });
-    pollJob();
-    toast(`开始升级 ${data.queued} 集低质量`);
-  } catch (e) {
-    toast(e.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = old;
   }
 }
 
@@ -1215,7 +1166,6 @@ function bind() {
   $("autoScanDays").addEventListener("change", saveSettings);
   $("autoScanLimit").addEventListener("change", saveSettings);
   $("autoScanMode")?.addEventListener("change", saveSettings);
-  $("autoUpgradeQuality")?.addEventListener("change", saveSettings);
   $("btnAutoScanNow").addEventListener("click", runAutoScanNow);
   $("btnContentSearch").addEventListener("click", doContentSearch);
   $("contentSearchInput").addEventListener("keydown", (e) => {
@@ -1243,7 +1193,6 @@ function bind() {
   $("diagModal").addEventListener("click", (ev) => {
     if (ev.target === $("diagModal")) closeDiag();
   });
-  $("btnUpgradeQuality")?.addEventListener("click", upgradeQuality);
   $("btnEvents")?.addEventListener("click", openEvents);
   $("btnEventsClose")?.addEventListener("click", closeEvents);
   $("btnEventsRefresh")?.addEventListener("click", refreshEvents);

@@ -112,10 +112,6 @@
               <option value="backfill">补齐所有缺失</option>
             </select>
             <button id="btnAutoScanNow" class="btn">立即扫描一次</button>
-            <label class="check" style="margin-top: 10px">
-              <input type="checkbox" id="autoUpgradeQuality" />
-              检测到低码率文件时自动下载高质量替换（先校验新文件完整才删旧的）
-            </label>
           </div>
           <div class="muted" id="autoScanMeta" style="margin-top: 8px"></div>
         </div>
@@ -223,9 +219,6 @@
           <button id="btnAll" class="btn">全选</button>
           <button id="btnUndownloaded" class="btn">只选未下载</button>
           <button id="btnScanShow" class="btn">检测已有文件</button>
-          <button id="btnUpgradeQuality" class="btn" title="把这一档的低码率文件重新下载为高质量并替换（先校验新文件完整才删旧的）" disabled>
-            升级低质量
-          </button>
           <button id="btnRetag" class="btn" title="给已下载的文件补写标题/封面/shownotes 等内嵌标签">
             补写标签
           </button>

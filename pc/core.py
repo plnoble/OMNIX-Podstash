@@ -189,52 +189,6 @@ def is_complete_file(
     return True
 
 
-def _file_bitrate_bps(path: Path) -> Optional[float]:
-    """Effective audio bitrate in bits/sec, or None if unreadable."""
-    try:
-        st = path.stat().st_size
-    except OSError:
-        return None
-    dur = _read_audio_duration_sec(path)
-    if not dur or dur <= 0 or st <= 0:
-        return None
-    return float(st) * 8 / dur
-
-
-def _rss_bitrate_bps(ep: Episode) -> Optional[float]:
-    """Feed-reported bitrate in bits/sec (size ÷ duration), or None if unknown."""
-    if not (ep.size and ep.size > 0):
-        return None
-    dur = _parse_duration_sec(ep.duration)
-    if not dur or dur <= 0:
-        return None
-    return float(ep.size) * 8 / dur
-
-
-def is_low_quality(path: Path, ep: Episode) -> bool:
-    """True if the file is complete but clearly lower bitrate than the feed.
-
-    Used to flag pre-existing low-bitrate files for optional upgrade. Bitrate is
-    bitrate-independent of the byte-length mismatch between quality tiers, so a
-    file is only flagged when its effective bitrate is well below the feed's.
-    """
-    # If we already downloaded the feed URL and got the same bitrate back, the
-    # feed's reported size is unreliable (e.g. ximalaya) — don't keep flagging it.
-    try:
-        recs = (read_index(path.parent).get("episodes") or {})
-    except OSError:
-        recs = {}
-    for key in _index_keys(ep):
-        rec = recs.get(key)
-        if isinstance(rec, dict) and rec.get("verified"):
-            return False
-    want = _rss_bitrate_bps(ep)
-    got = _file_bitrate_bps(path)
-    if not want or not got:
-        return False
-    return got < want * 0.70
-
-
 _AUDIO_EXT_RE = re.compile(r"\.(mp3|m4a|mp4|aac|ogg|opus|wav|flac)$", re.IGNORECASE)
 _KEEP_CHARS_RE = re.compile(r"[^0-9a-zA-Z\u4e00-\u9fff]+")
 # Dates / EP12 / 第n期 may sit against CJK with no space. Bare "95后" must NOT lose "95".
@@ -614,7 +568,6 @@ def mark_episodes_local(
                     "partial": False,
                     "local_path": "",
                     "local_size": 0,
-                    "low_quality": False,
                 }
             )
             continue
@@ -628,20 +581,14 @@ def mark_episodes_local(
             expected_duration=getattr(ep, "duration", "") or "",
             lenient=lenient,
         )
-        low = False
         if complete:
             done += 1
-            try:
-                low = is_low_quality(path, ep)
-            except Exception:
-                low = False
         rows.append(
             {
                 "downloaded": complete,
                 "partial": (not complete) and size > 0,
                 "local_path": str(path),
                 "local_size": size,
-                "low_quality": low,
             }
         )
     return rows, done
@@ -676,38 +623,15 @@ def remember_local_file(folder: Path, ep: Episode, dest: Path) -> None:
     if size <= 0:
         return
     data = read_index(folder)
-    episodes = data.setdefault("episodes", {})
-    # Preserve the "verified" marker across re-detection so a source we already
-    # confirmed offers no higher quality is not re-flagged as low quality.
-    verified = False
-    for key in _index_keys(ep):
-        old = episodes.get(key)
-        if isinstance(old, dict) and old.get("verified"):
-            verified = True
-            break
     rec = {
         "title": ep.title,
         "file": dest.name,
         "size": size,
-        "complete": is_complete_file(dest, ep.size, expected_duration=ep.duration),
+        "complete": is_complete_file(dest, ep.size),
         "guid": ep.guid or "",
     }
-    if verified:
-        rec["verified"] = True
-    for key in _index_keys(ep):
-        episodes[key] = rec
-    write_index(folder, data)
-
-
-def _mark_source_verified(folder: Path, ep: Episode) -> None:
-    """Remember that this episode's feed offers no higher quality than what we have."""
-    data = read_index(folder)
     episodes = data.setdefault("episodes", {})
     for key in _index_keys(ep):
-        rec = episodes.get(key)
-        if not isinstance(rec, dict):
-            rec = {"title": ep.title, "file": "", "size": 0, "complete": True, "guid": ep.guid or ""}
-        rec["verified"] = True
         episodes[key] = rec
     write_index(folder, data)
 
@@ -787,7 +711,6 @@ class DownloadItem:
     bytes_done: int = 0
     bytes_total: int = 0
     error: str = ""
-    upgrade: bool = False  # re-download as higher quality and replace the old file
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -798,7 +721,6 @@ class DownloadItem:
             "bytes_done": self.bytes_done,
             "bytes_total": self.bytes_total,
             "error": self.error,
-            "upgrade": self.upgrade,
         }
 
 
@@ -1630,83 +1552,6 @@ async def fetch_cover(client: httpx.AsyncClient, url: str) -> bytes | None:
     return None
 
 
-async def _download_upgrade(
-    client: httpx.AsyncClient,
-    item: DownloadItem,
-    dest: Path,
-    job: DownloadJob,
-    cover: bytes | None,
-    on_touch: Callable[[], None],
-    *,
-    max_attempts: int,
-) -> None:
-    """Re-download a low-bitrate file as high quality, then atomically replace it.
-
-    Downloads into a hidden temp file, verifies the new file plays the full
-    duration and is actually higher bitrate, and only then swaps out the old
-    file. On any failure the original file is left untouched.
-    """
-    folder = dest.parent
-    tmp = dest.with_name(f".{dest.stem}.upgrade{dest.suffix}")
-    tmp.unlink(missing_ok=True)
-    item.path = ""
-    await download_one(
-        client,
-        item,
-        tmp,
-        on_progress=lambda _i: on_touch(),
-        max_attempts=max_attempts,
-    )
-    if item.status != "done" or not tmp.exists():
-        tmp.unlink(missing_ok=True)
-        on_touch()
-        return
-
-    # Only replace when the new file is complete AND genuinely higher bitrate.
-    if not is_complete_file(tmp, item.episode.size, expected_duration=item.episode.duration):
-        tmp.unlink(missing_ok=True)
-        item.status = "error"
-        item.error = "新文件校验不完整，保留原文件"
-        on_touch()
-        return
-    old_bps = _file_bitrate_bps(dest) if dest.exists() else None
-    new_bps = _file_bitrate_bps(tmp)
-    if old_bps is not None and new_bps is not None and new_bps <= old_bps * 1.02:
-        # The feed's reported size is unreliable (e.g. ximalaya RSS claims a
-        # high-bitrate length but actually serves the same file). This is a
-        # skip, not a failure: keep the original and stop flagging it.
-        tmp.unlink(missing_ok=True)
-        _mark_source_verified(folder, item.episode)
-        remember_local_file(folder, item.episode, dest)
-        item.path = str(dest)
-        item.status = "skipped"
-        item.error = "源端无更高码率，已保留原文件"
-        on_touch()
-        return
-
-    try:
-        dest.unlink(missing_ok=True)
-        tmp.replace(dest)
-    except OSError as e:
-        tmp.unlink(missing_ok=True)
-        item.status = "error"
-        item.error = f"替换失败，保留原文件: {e}"
-        on_touch()
-        return
-
-    item.path = str(dest)
-    remember_local_file(folder, item.episode, dest)
-    write_media_tags(
-        dest,
-        title=item.episode.title,
-        artist=job.show_name,
-        album=job.show_name,
-        track=max(0, item.episode.index) + 1,
-        cover=cover,
-    )
-    on_touch()
-
-
 async def run_download_job(
     job: DownloadJob,
     concurrency: int = 32,
@@ -1764,11 +1609,6 @@ async def run_download_job(
                     return
                 dest = build_dest_path(out, job.show_name, item.episode)
                 folder = dest.parent
-                if item.upgrade:
-                    await _download_upgrade(
-                        client, item, dest, job, cover, touch, max_attempts=max_attempts
-                    )
-                    return
                 expected = expected_size_for(folder, item.episode, dest)
                 if dest.exists() and is_complete_file(dest, expected):
                     st = dest.stat().st_size
@@ -1811,20 +1651,14 @@ async def run_download_job(
             on_update(job)
         return
     failed = sum(1 for i in job.items if i.status == "error")
-    skipped = sum(1 for i in job.items if i.status == "skipped" and not i.upgrade)
-    skipped_upgrade = sum(1 for i in job.items if i.status == "skipped" and i.upgrade)
-    downloaded = sum(1 for i in job.items if i.status == "done" and not i.upgrade)
-    upgraded = sum(1 for i in job.items if i.status == "done" and i.upgrade)
+    skipped = sum(1 for i in job.items if i.status == "skipped")
+    downloaded = sum(1 for i in job.items if i.status == "done")
     job.status = "error" if failed and failed == len(job.items) else "done"
     parts: list[str] = []
     if downloaded:
         parts.append(f"新下 {downloaded}")
-    if upgraded:
-        parts.append(f"升级 {upgraded}")
     if skipped:
         parts.append(f"已存在 {skipped}")
-    if skipped_upgrade:
-        parts.append(f"无更高码率 {skipped_upgrade}")
     if failed:
         parts.append(f"失败 {failed} — 可点「重试失败」")
     job.message = "完成，" + "，".join(parts) if parts else "全部完成"
