@@ -68,6 +68,17 @@ def _name_key(name: str) -> str:
     return re.sub(r"\s+", "", (name or "")).casefold().strip()
 
 
+def canonical_key(show: dict[str, Any] | Show) -> str:
+    """Storage key for a show, merged onto an existing same-name show when present."""
+    key = show_key(show)
+    nk = _name_key(show.get("name") if isinstance(show, dict) else show.name)
+    if nk:
+        for s in store.list_shows():
+            if _name_key(s.get("name") or "") == nk and show_key(s) != key:
+                return show_key(s)
+    return key
+
+
 def _normalize_show(show: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(show.get("id") or ""),

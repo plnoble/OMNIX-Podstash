@@ -569,7 +569,7 @@ async def api_resolve(body: ResolveBody) -> dict[str, Any]:
     if not show:
         raise HTTPException(502, "解析失败: unknown")
 
-    sid = (show.id or show.feed_url or show.name or "").strip()
+    sid = persist.canonical_key(show)
     if sid:
         persist.save_episodes(sid, episodes)
 
